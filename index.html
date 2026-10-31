@@ -197,9 +197,12 @@ const valorAjusteMes = (e, m) => {
 const ajustesMes = m => (S.estornos || []).filter(e => parcDe(e) && valorAjusteMes(e, m) !== 0);
 const somaAjustes = (m, filtro = () => true) => ajustesMes(m).filter(filtro).reduce((a, e) => a + valorAjusteMes(e, m), 0);
 const parcDe = e => S.parcelados.find(p => p.id === e.parcelaId);
+// Compra no cartão marcada como "Próxima fatura" (prox) entra na fatura do mês seguinte ao da compra.
+const mesFatLanc = l => (l.prox ? addM(mkOf(l.data), 1) : mkOf(l.data));
+const recNaFatura = (r, m) => ativo(r, r.prox ? addM(m, -1) : m);
 const fatCartao = (c, m) =>
   S.parcelados.filter(p => p.cartao === c && parcelaAtiva(p, m)).reduce((a, p) => a + valorParcela(p), 0) +
-  S.recorrentes.filter(r => r.grupo === 'Cartão' && r.cartao === c && ativo(r, m)).reduce((a, r) => a + r.valor, 0) -
+  S.recorrentes.filter(r => r.grupo === 'Cartão' && r.cartao === c && recNaFatura(r, m)).reduce((a, r) => a + r.valor, 0) -
   somaAjustes(m, e => parcDe(e).cartao === c);
 const faturaTotal = m => S.config.cartoes.reduce((a, c) => a + fatCartao(c, m), 0);
 const execMes = m =>
@@ -922,7 +925,7 @@ function fixarLanc(form) {
     try { localStorage.removeItem('cf-lanc-fixo'); } catch (e) {}
   } else {
     const f = form.elements;
-    lancFixo = { categoria: f.categoria.value, forma: f.forma.value, cartao: f.cartao.value,
+    lancFixo = { categoria: f.categoria.value, forma: f.forma.value, cartao: f.cartao.value, fatura: f.fatura.value,
       parcelada: f.parcelada.checked, nParcelas: f.nParcelas.value };
     try { localStorage.setItem('cf-lanc-fixo', JSON.stringify(lancFixo)); } catch (e) {}
   }
@@ -932,10 +935,19 @@ function fixarLanc(form) {
 function togLancCampos(form) {
   const parc = form.elements.parcelada.checked;
   form.querySelector('#lbl-cartao').hidden = !(parc || form.elements.forma.value === 'Cartão');
+  form.querySelector('#lbl-fatura').hidden = form.querySelector('#lbl-cartao').hidden;
   form.querySelector('#lbl-valor').hidden = parc;
   const campos = form.querySelector('#campos-parc');
   campos.hidden = !parc;
   campos.style.display = parc ? 'contents' : '';
+}
+
+// Escolha da fatura em compras no cartão: a do mês da compra ('') ou a seguinte ('prox').
+const optsFatura = sel => `<option value="" ${sel ? '' : 'selected'}>Fatura atual</option><option value="prox" ${sel ? 'selected' : ''}>Próxima fatura</option>`;
+// Preenche o mês da 1ª parcela a partir da data da compra e da fatura escolhida.
+function sugerirMesFatura(form, campoData, campoMes) {
+  const f = form.elements;
+  if (f[campoData].value) f[campoMes].value = addM(mkOf(f[campoData].value), f.fatura.value === 'prox' ? 1 : 0);
 }
 
 let lancEdit = null; // { tipo: 'lanc' | 'parc', id }
@@ -964,6 +976,7 @@ function formEdicaoLanc() {
         <label>Categoria<select name="categoria">${opts(S.config.categorias, it.categoria)}</select></label>
         <label>Forma<select name="forma">${opts(FORMAS, it.forma)}</select></label>
         <label>Cartão (se Forma = Cartão)<select name="cartao"><option value=""></option>${opts(S.config.cartoes, it.cartao || undefined)}</select></label>
+        <label>Fatura (se Forma = Cartão)<select name="fatura">${optsFatura(it.prox)}</select></label>
         <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" value="${it.valor}" required></label>
         <button>Salvar alterações</button>
         <button type="button" class="small" onclick="cancelarLanc()">Cancelar</button>
@@ -1004,6 +1017,7 @@ function salvarLanc(e) {
       data: f.data.value, descricao, categoria: f.categoria.value, forma: f.forma.value,
       cartao: f.forma.value === 'Cartão' ? f.cartao.value : '', valor
     });
+    if (f.forma.value === 'Cartão' && f.fatura.value === 'prox') it.prox = true; else delete it.prox;
   } else {
     const p = S.parcelados.find(x => x.id === lancEdit.id);
     if (!p) { lancEdit = null; return render(); }
@@ -1027,7 +1041,7 @@ V.lancamentos = () => {
   const itens = [
     ...S.lancamentos.map(l => ({
       id: l.id, tipo: 'lanc', data: l.data, descricao: l.descricao, categoria: l.categoria,
-      forma: l.forma === 'Cartão' && l.cartao ? `Cartão · ${l.cartao}` : (l.forma || '—'), valor: l.valor, obs: ''
+      forma: l.forma === 'Cartão' && l.cartao ? `Cartão · ${l.cartao}${l.prox ? ' · próxima fatura' : ''}` : (l.forma || '—'), valor: l.valor, obs: ''
     })),
     ...S.parcelados.map(p => ({
       id: p.id, tipo: 'parc', data: p.dataCompra, descricao: p.descricao, categoria: p.categoria || 'Outros',
@@ -1049,11 +1063,12 @@ V.lancamentos = () => {
   const novo = `
     <section class="card"><h2>Novo lançamento (gasto executado)</h2>
       <form class="fields" id="formLanc" onsubmit="addLanc(event)">
-        <label>Data<input type="date" name="data" value="${hoje()}" required></label>
+        <label>Data<input type="date" name="data" value="${hoje()}" required onchange="sugerirMesFatura(this.form, 'data', 'primeira')"></label>
         <label>Descrição<input type="text" name="descricao" required></label>
         <label>Categoria<select name="categoria">${opts(S.config.categorias, fx.categoria)}</select></label>
         <label>Forma<select name="forma" onchange="togLancCampos(this.form)">${opts(FORMAS, fx.forma)}</select></label>
         <label id="lbl-cartao" ${mostraCartao ? '' : 'hidden'}>Cartão<select name="cartao"><option value=""></option>${opts(S.config.cartoes, fx.cartao)}</select></label>
+        <label id="lbl-fatura" ${mostraCartao ? '' : 'hidden'}>Fatura<select name="fatura" onchange="sugerirMesFatura(this.form, 'data', 'primeira')">${optsFatura(fx.fatura === 'prox')}</select></label>
         <label id="lbl-valor" ${parcFixo ? 'hidden' : ''}>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor"></label>
         <label style="grid-auto-flow:column;align-items:center;justify-content:start;gap:8px;padding-bottom:10px">
           <input type="checkbox" name="parcelada" ${parcFixo ? 'checked' : ''} onchange="togLancCampos(this.form)"> Compra parcelada
@@ -1061,13 +1076,13 @@ V.lancamentos = () => {
         <div id="campos-parc" ${parcFixo ? 'style="display:contents"' : 'hidden'}>
           <label>Nº de parcelas<input type="number" step="1" min="1" name="nParcelas" value="${fx.nParcelas || 2}"></label>
           <label>Valor da parcela (R$)<input type="number" step="0.01" min="0.01" name="valorParcela"></label>
-          <label>1ª parcela<input type="month" name="primeira" value="${addM(mkOf(hoje()), 1)}"></label>
+          <label>1ª parcela<input type="month" name="primeira" value="${addM(mkOf(hoje()), fx.fatura === 'prox' ? 1 : 0)}"></label>
         </div>
         <button>Adicionar</button>
         <button type="button" class="small" onclick="fixarLanc(this.form)">${lancFixo ? 'Soltar opções fixas' : 'Fixar estas opções'}</button>
       </form>
-      ${lancFixo ? `<p class="muted" style="margin-top:10px">Opções fixas: ${esc(fx.forma || '')}${fx.cartao ? ` · ${esc(fx.cartao)}` : ''} · ${esc(fx.categoria || '')}${fx.parcelada ? ` · ${esc(fx.nParcelas || 2)}x` : ''}. Ao lançar, basta preencher descrição e valor.</p>` : ''}
-      <p class="muted" style="margin-top:10px">Compra parcelada entra na fatura do cartão e no executado de cada mês das parcelas, na categoria escolhida.</p>
+      ${lancFixo ? `<p class="muted" style="margin-top:10px">Opções fixas: ${esc(fx.forma || '')}${fx.cartao ? ` · ${esc(fx.cartao)}` : ''}${mostraCartao ? ` · ${fx.fatura === 'prox' ? 'próxima fatura' : 'fatura atual'}` : ''} · ${esc(fx.categoria || '')}${fx.parcelada ? ` · ${esc(fx.nParcelas || 2)}x` : ''}. Ao lançar, basta preencher descrição e valor.</p>` : ''}
+      <p class="muted" style="margin-top:10px">Fatura: "Fatura atual" põe a compra na fatura do mês da compra; "Próxima fatura", na do mês seguinte (use quando a fatura do cartão já fechou). Compra parcelada entra na fatura do cartão e no executado de cada mês das parcelas, na categoria escolhida.</p>
     </section>`;
   return `${lancEdit ? formEdicaoLanc() : novo}
     <section class="card">
@@ -1082,30 +1097,51 @@ V.lancamentos = () => {
     </section>`;
 };
 
+// Opções fixas do formulário de recorrente: grupo, cartão, fatura e categoria.
+let recFixo = (() => { try { return JSON.parse(localStorage.getItem('cf-rec-fixo') || 'null'); } catch (e) { return null; } })();
+function fixarRec(form) {
+  if (recFixo) {
+    recFixo = null;
+    try { localStorage.removeItem('cf-rec-fixo'); } catch (e) {}
+  } else {
+    const f = form.elements;
+    recFixo = { grupo: f.grupo.value, cartao: f.cartao.value, fatura: f.fatura.value, categoria: f.categoria.value };
+    try { localStorage.setItem('cf-rec-fixo', JSON.stringify(recFixo)); } catch (e) {}
+  }
+  render();
+}
+
 V.recorrentes = () => {
   const linhas = S.recorrentes.map(r => `<tr>
-      <td>${esc(r.descricao)}</td><td>${esc(r.grupo)}</td><td>${esc(r.cartao || '—')}</td><td>${esc(r.categoria)}</td>
+      <td>${esc(r.descricao)}</td><td>${esc(r.grupo)}</td><td>${esc(r.cartao || '—')}${r.grupo === 'Cartão' && r.prox ? ' <span class="muted">(próxima fatura)</span>' : ''}</td><td>${esc(r.categoria)}</td>
       <td class="num">${brl(r.valor)}</td><td>${fmtData(r.inicio)}</td><td>${r.fim ? fmtData(r.fim) : 'sem fim'}</td>
       <td class="num"><button class="small" onclick="editarRec('${r.id}')">Editar</button>
       <button class="danger small" onclick="excluir('recorrentes','${r.id}')">Excluir</button></td>
     </tr>`).join('') || `<tr><td colspan="8" class="muted">Nenhum item recorrente.</td></tr>`;
   const it = recEdit ? S.recorrentes.find(x => x.id === recEdit) : null;
   if (recEdit && !it) recEdit = null;
-  const v = (k, d = '') => (it && it[k] != null ? it[k] : d);
+  // No item novo, as opções fixas fazem o papel de valor inicial.
+  const fx = !it && recFixo ? recFixo : {};
+  const v = (k, d = '') => (it && it[k] != null ? it[k] : fx[k] != null ? fx[k] : d);
+  const prox = it ? !!it.prox : fx.fatura === 'prox';
   return `
     <section class="card"><h2>${it ? 'Editar item recorrente' : 'Novo item recorrente'}</h2>
       <form class="fields" onsubmit="${it ? 'salvarRec' : 'addRec'}(event)">
-        <label>Descrição<input type="text" name="descricao" value="${esc(v('descricao'))}" required></label>
+        <label>Descrição<input type="text" name="descricao" value="${esc(it ? it.descricao : '')}" required></label>
         <label>Grupo<select name="grupo">${opts(GRUPOS, v('grupo', undefined))}</select></label>
-        <label>Cartão (se Cartão)<select name="cartao"><option value=""></option>${opts(S.config.cartoes, v('cartao', undefined))}</select></label>
+        <label>Cartão (se Cartão)<select name="cartao"><option value=""></option>${opts(S.config.cartoes, v('cartao', undefined) || undefined)}</select></label>
+        <label>Fatura (se Cartão)<select name="fatura">${optsFatura(prox)}</select></label>
         <label>Categoria<select name="categoria">${opts(S.config.categorias, v('categoria', undefined))}</select></label>
         <label>Valor mensal (R$)<input type="number" step="0.01" min="0.01" name="valor" value="${v('valor')}" required></label>
         <label>Início<input type="date" name="inicio" value="${v('inicio', hoje())}" required></label>
         <label>Fim (opcional)<input type="date" name="fim" value="${v('fim')}"></label>
         ${it ? `<label>Alterar a partir de (opcional)<input type="date" name="aPartir"></label>` : ''}
         <button>${it ? 'Salvar alterações' : 'Adicionar'}</button>
-        ${it ? '<button type="button" class="small" onclick="cancelarRec()">Cancelar</button>' : ''}
+        ${it ? '<button type="button" class="small" onclick="cancelarRec()">Cancelar</button>'
+          : `<button type="button" class="small" onclick="fixarRec(this.form)">${recFixo ? 'Soltar opções fixas' : 'Fixar estas opções'}</button>`}
       </form>
+      ${!it && recFixo ? `<p class="muted" style="margin-top:10px">Opções fixas: ${esc(recFixo.grupo || '')}${recFixo.grupo === 'Cartão' ? `${recFixo.cartao ? ` · ${esc(recFixo.cartao)}` : ''} · ${recFixo.fatura === 'prox' ? 'próxima fatura' : 'fatura atual'}` : ''} · ${esc(recFixo.categoria || '')}.</p>` : ''}
+      <p class="muted" style="margin-top:10px">Fatura (só para o grupo Cartão): "Próxima fatura" faz a cobrança de cada mês entrar na fatura do mês seguinte, como quando ela cai depois do fechamento do cartão.</p>
       ${it ? '<p class="muted" style="margin-top:10px">Sem "Alterar a partir de", a mudança vale para todos os meses em que o item está ativo, inclusive os passados. Com a data, os meses anteriores ficam como estavam e o novo valor começa nessa data.</p>' : ''}
     </section>
     <section class="card"><div class="scroll"><table>
@@ -1129,7 +1165,7 @@ function linhasFatura(m) {
       const n = mIdx(m) - mIdx(p.inicio) + 1;
       itens.push({ tipo: 'Parcelado', descricao: p.descricao, parcela: `${n}/${p.parcelas}`, categoria: p.categoria || 'Outros', valor: valorParcela(p) });
     });
-    S.recorrentes.filter(r => r.grupo === 'Cartão' && r.cartao === c && ativo(r, m)).forEach(r => {
+    S.recorrentes.filter(r => r.grupo === 'Cartão' && r.cartao === c && recNaFatura(r, m)).forEach(r => {
       itens.push({ tipo: 'Recorrente', descricao: r.descricao, parcela: '', categoria: r.categoria || 'Outros', valor: r.valor });
     });
     ajustesMes(m).filter(e => parcDe(e).cartao === c).forEach(e => {
@@ -1137,7 +1173,7 @@ function linhasFatura(m) {
       itens.push({ tipo: e.tipo, descricao: e.descricao || p.descricao, parcela: '', categoria: p.categoria || 'Outros', valor: -valorAjusteMes(e, m) });
     });
     // Gastos avulsos lançados no cartão (Lançamentos, Forma = Cartão) entram na fatura real deste cartão.
-    S.lancamentos.filter(l => l.forma === 'Cartão' && l.cartao === c && mkOf(l.data) === m).forEach(l => {
+    S.lancamentos.filter(l => l.forma === 'Cartão' && l.cartao === c && mesFatLanc(l) === m).forEach(l => {
       itens.push({ tipo: 'Lançamento', descricao: l.descricao, parcela: '', categoria: l.categoria || 'Outros', valor: l.valor });
     });
     return { cartao: c, itens, total: itens.reduce((t, i) => t + i.valor, 0) };
@@ -1182,13 +1218,20 @@ function faturaTrocarMes(e) {
 }
 
 V.faturas = () => {
-  const meses = Array.from({ length: 36 }, (_, i) => addM(S.config.primeiroMes, i));
-  if (!faturaMes || !meses.includes(faturaMes)) faturaMes = meses[0];
+  // A lista começa no mês da fatura mais antiga com gasto no cartão (até 12 meses antes da projeção),
+  // para que compras anteriores ao 1º mês da projeção também possam ser consultadas.
+  const p0 = S.config.primeiroMes;
+  const antigos = S.lancamentos.filter(l => l.forma === 'Cartão' && l.cartao).map(mesFatLanc)
+    .concat(S.parcelados.map(p => mkOf(p.inicio)))
+    .filter(m => /^\d{4}-\d{2}$/.test(m) && mIdx(m) < mIdx(p0) && mIdx(m) >= mIdx(addM(p0, -12)));
+  const ini = antigos.reduce((a, m) => (mIdx(m) < mIdx(a) ? m : a), p0);
+  const meses = Array.from({ length: 36 + mIdx(p0) - mIdx(ini) }, (_, i) => addM(ini, i));
+  if (!faturaMes || !meses.includes(faturaMes)) faturaMes = meses.includes(mkOf(hoje())) ? mkOf(hoje()) : p0;
   const blocos = linhasFatura(faturaMes);
   const total = blocos.reduce((t, b) => t + b.total, 0);
   const receita = sumRec('Receita', faturaMes) + sumEv('Receita', faturaMes);
   const pct = receita > 0 ? total / receita : null;
-  const prox = meses.slice(0, 12);
+  const prox = Array.from({ length: 12 }, (_, i) => addM(p0, i));
   return `
     <section class="card"><h2>Faturas dos cartões</h2>
       <form class="fields" onsubmit="faturaTrocarMes(event)">
@@ -1239,6 +1282,27 @@ V.faturas = () => {
     </section>`;
 };
 
+// Opções fixas do formulário de compra parcelada: cartão, fatura e categoria.
+let parcFixo = (() => { try { return JSON.parse(localStorage.getItem('cf-parc-fixo') || 'null'); } catch (e) { return null; } })();
+function fixarParc(form) {
+  if (parcFixo) {
+    parcFixo = null;
+    try { localStorage.removeItem('cf-parc-fixo'); } catch (e) {}
+  } else {
+    const f = form.elements;
+    parcFixo = { cartao: f.cartao.value, fatura: f.fatura.value, categoria: f.categoria.value };
+    try { localStorage.setItem('cf-parc-fixo', JSON.stringify(parcFixo)); } catch (e) {}
+  }
+  render();
+}
+// Mês da parcela informada = mês da compra (+1 se próxima fatura) + parcelas já passadas.
+function sugerirMesParc(form) {
+  const f = form.elements;
+  if (!f.dataCompra.value) return;
+  const atual = Math.max(1, parseInt(f.atual.value, 10) || 1);
+  f.inicio.value = addM(mkOf(f.dataCompra.value), (f.fatura.value === 'prox' ? 1 : 0) + atual - 1);
+}
+
 V.parcelas = () => {
   const ajustes = (S.estornos || []).slice().sort((a, b) => a.mes.localeCompare(b.mes)).map(e => {
     const p = parcDe(e);
@@ -1258,16 +1322,20 @@ V.parcelas = () => {
   return `
     <section class="card"><h2>Nova compra parcelada</h2>
       <form class="fields" onsubmit="addParc(event)">
-        <label>Data da compra<input type="date" name="dataCompra" value="${hoje()}" required></label>
-        <label>Cartão<select name="cartao">${opts(S.config.cartoes)}</select></label>
+        <label>Data da compra<input type="date" name="dataCompra" value="${hoje()}" required onchange="sugerirMesParc(this.form)"></label>
+        <label>Cartão<select name="cartao">${opts(S.config.cartoes, parcFixo ? parcFixo.cartao : undefined)}</select></label>
+        <label>Fatura<select name="fatura" onchange="sugerirMesParc(this.form)">${optsFatura(parcFixo && parcFixo.fatura === 'prox')}</select></label>
         <label>Descrição<input type="text" name="descricao" required></label>
-        <label>Categoria<select name="categoria">${opts(S.config.categorias)}</select></label>
+        <label>Categoria<select name="categoria">${opts(S.config.categorias, parcFixo ? parcFixo.categoria : undefined)}</select></label>
         <label>Valor total (R$)<input type="number" step="0.01" min="0.01" name="valorTotal" required></label>
         <label>Nº de parcelas<input type="number" step="1" min="1" name="parcelas" value="1" required></label>
-        <label>Mês desta parcela<input type="month" name="inicio" value="${mkOf(hoje())}" required></label>
-        <label>Nº desta parcela<input type="number" step="1" min="1" name="atual" value="1" required></label>
+        <label>Mês desta parcela<input type="month" name="inicio" value="${addM(mkOf(hoje()), parcFixo && parcFixo.fatura === 'prox' ? 1 : 0)}" required></label>
+        <label>Nº desta parcela<input type="number" step="1" min="1" name="atual" value="1" required onchange="sugerirMesParc(this.form)"></label>
         <button>Adicionar</button>
+        <button type="button" class="small" onclick="fixarParc(this.form)">${parcFixo ? 'Soltar opções fixas' : 'Fixar estas opções'}</button>
       </form>
+      ${parcFixo ? `<p class="muted" style="margin-top:10px">Opções fixas: ${esc(parcFixo.cartao || '')} · ${parcFixo.fatura === 'prox' ? 'próxima fatura' : 'fatura atual'} · ${esc(parcFixo.categoria || '')}.</p>` : ''}
+      <p class="muted" style="margin-top:10px">Fatura: escolher "Próxima fatura" põe a 1ª parcela na fatura do mês seguinte ao da compra. O mês desta parcela é preenchido sozinho, e você ainda pode alterá-lo.</p>
     </section>
     <section class="card"><div class="scroll"><table>
       <thead><tr><th>Compra</th><th>Cartão</th><th>Descrição</th><th class="num">Total</th><th class="num">Parcelas</th><th class="num">Valor parcela</th><th>1ª</th><th>Última</th><th></th></tr></thead>
@@ -1647,6 +1715,17 @@ function excluir(tipo, id) {
 
 
 // Forma de pagamento na planilha: 'Cartão: Nubank' vira forma 'Cartão' + cartão 'Nubank'.
+// Coluna "Fatura" da planilha: "Próxima" (com ou sem acento, qualquer caixa) marca a fatura seguinte.
+const ehProxima = v => /^pr[oó]xima/i.test(String(v || '').trim());
+// Data 'aaaa-mm-dd' n meses depois, como o EDATE da planilha (dia limitado ao fim do mês).
+function addMesData(iso, n) {
+  if (!n) return iso;
+  const [a, m, d] = iso.split('-').map(Number);
+  const k = a * 12 + (m - 1) + n, ano = Math.floor(k / 12), mes = k % 12 + 1;
+  const ultimo = new Date(ano, mes, 0).getDate();
+  return `${ano}-${pad(mes)}-${pad(Math.min(d, ultimo))}`;
+}
+
 function formaECartao(v) {
   const t = v ? String(v) : '';
   const m = /^Cartão: (.+)$/.exec(t);
@@ -1676,7 +1755,8 @@ function addLanc(e) {
     if (!(valor > 0)) return alert('Informe um valor maior que zero.');
     if (f.forma.value === 'Cartão' && !f.cartao.value) return alert('Escolha o cartão em que o gasto foi lançado.');
     S.lancamentos.push({ id: uid(), data: f.data.value, descricao, categoria: f.categoria.value, forma: f.forma.value,
-      cartao: f.forma.value === 'Cartão' ? f.cartao.value : '', valor });
+      cartao: f.forma.value === 'Cartão' ? f.cartao.value : '', valor,
+      ...(f.forma.value === 'Cartão' && f.fatura.value === 'prox' ? { prox: true } : {}) });
   }
   commit();
 }
@@ -1690,6 +1770,7 @@ function dadosRec(f) {
   return {
     descricao: f.descricao.value.trim(), grupo: f.grupo.value,
     cartao: f.grupo.value === 'Cartão' ? f.cartao.value : '',
+    prox: f.grupo.value === 'Cartão' && f.fatura.value === 'prox',
     categoria: f.categoria.value, valor, inicio: f.inicio.value, fim: f.fim.value
   };
 }
@@ -1731,7 +1812,7 @@ function salvarRec(e) {
   if (aPartir && aPartir > it.inicio) {
     // Alteração a partir de uma data: o item antigo termina no dia anterior; o novo começa na data escolhida.
     if (it.fim && aPartir > it.fim) return alert('A data escolhida é depois do fim deste item. Use "Fim" para encerrá-lo.');
-    const d = dadosRec({ descricao: f.descricao, grupo: f.grupo, cartao: f.cartao, categoria: f.categoria, valor: f.valor, fim: f.fim, inicio: { value: aPartir } });
+    const d = dadosRec({ descricao: f.descricao, grupo: f.grupo, cartao: f.cartao, fatura: f.fatura, categoria: f.categoria, valor: f.valor, fim: f.fim, inicio: { value: aPartir } });
     if (!d) return;
     it.fim = diaAnterior(aPartir);
     S.recorrentes.push({ id: uid(), ...d, inicio: aPartir, fim: d.fim });
@@ -2104,15 +2185,20 @@ function montarPlanilha() {
   for (let i = 0; i < nLinhasCfg; i++) cfg.push(listas.map(l => (l[i] ?? null)));
   abas.push({ nome: 'Config', linhas: cfg });
 
-  // Recorrentes
-  const rec = [['Descrição', 'Grupo', 'Cartão (se Cartão)', 'Categoria', 'Valor mensal', 'Início', 'Fim (vazio = sem fim)', 'Fim considerado']];
+  // Recorrentes. "Fatura" = Próxima desloca a cobrança do cartão para a fatura do mês seguinte (colunas J e K).
+  const rec = [['Descrição', 'Grupo', 'Cartão (se Cartão)', 'Categoria', 'Valor mensal', 'Início', 'Fim (vazio = sem fim)', 'Fim considerado',
+    'Fatura (vazio = atual)', 'Início na fatura', 'Fim na fatura']];
   const nRec = Math.max(299, S.recorrentes.length);
   for (let i = 0; i < nRec; i++) {
     const r = i + 2, it = S.recorrentes[i];
-    const formulaH = F(`IF(G${r}="",DATE(2099,12,1),G${r})`, serialDate(it && it.fim ? it.fim : '2099-12-01'), FMT_DATA);
+    const fim = it && it.fim ? it.fim : '2099-12-01', desl = it && it.prox ? 1 : 0;
+    const formulaH = F(`IF(G${r}="",DATE(2099,12,1),G${r})`, serialDate(fim), FMT_DATA);
+    const formulaJ = F(`IF(F${r}="","",EDATE(F${r},IF(I${r}="Próxima",1,0)))`, it ? serialDate(addMesData(it.inicio, desl)) : '', FMT_DATA);
+    const formulaK = F(`EDATE(H${r},IF(I${r}="Próxima",1,0))`, serialDate(addMesData(fim, desl)), FMT_DATA);
     if (it) rec.push([it.descricao, it.grupo, it.cartao || null, it.categoria, N(it.valor, FMT_VALOR),
-      N(serialDate(it.inicio), FMT_DATA), it.fim ? N(serialDate(it.fim), FMT_DATA) : null, formulaH]);
-    else rec.push([null, null, null, null, null, null, null, formulaH]);
+      N(serialDate(it.inicio), FMT_DATA), it.fim ? N(serialDate(it.fim), FMT_DATA) : null, formulaH,
+      it.grupo === 'Cartão' && it.prox ? 'Próxima' : null, formulaJ, formulaK]);
+    else rec.push([null, null, null, null, null, null, null, formulaH, null, formulaJ, formulaK]);
   }
   abas.push({ nome: 'Recorrentes', linhas: rec });
 
@@ -2148,9 +2234,9 @@ function montarPlanilha() {
   abas.push({ nome: 'Eventuais', linhas: ev });
 
   // Lançamentos (gastos executados)
-  const lan = [['Data', 'Descrição', 'Categoria', 'Valor', 'Forma de pagamento']];
+  const lan = [['Data', 'Descrição', 'Categoria', 'Valor', 'Forma de pagamento', 'Fatura (vazio = atual)']];
   S.lancamentos.forEach(l => lan.push([N(serialDate(l.data), FMT_DATA), l.descricao, l.categoria, N(l.valor, FMT_VALOR),
-    l.forma === 'Cartão' && l.cartao ? `Cartão: ${l.cartao}` : (l.forma || null)]));
+    l.forma === 'Cartão' && l.cartao ? `Cartão: ${l.cartao}` : (l.forma || null), l.forma === 'Cartão' && l.prox ? 'Próxima' : null]));
   abas.push({ nome: 'Lancamentos', linhas: lan });
 
   // Orçamento por mês (valores editáveis)
@@ -2199,7 +2285,7 @@ function montarPlanilha() {
       const col = colL(j + 1), card = cartoes[j];
       const val = card ? fatCartao(card, m) : 0;
       total += val;
-      row.push(F(`IF(${col}$3="",0,SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$B$2:$B$300,${col}$3,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})+SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"Cartão",Recorrentes!$C$2:$C$300,${col}$3,Recorrentes!$F$2:$F$300,"<="&EOMONTH($A${r},0),Recorrentes!$H$2:$H$300,">="&$A${r})-SUMIFS(Estornos!$K$2:$K$500,Estornos!$B$2:$B$500,${col}$3,Estornos!$I$2:$I$500,"<="&$A${r},Estornos!$J$2:$J$500,">="&$A${r}))`, val, FMT_VALOR));
+      row.push(F(`IF(${col}$3="",0,SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$B$2:$B$300,${col}$3,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})+SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"Cartão",Recorrentes!$C$2:$C$300,${col}$3,Recorrentes!$J$2:$J$300,"<="&EOMONTH($A${r},0),Recorrentes!$K$2:$K$300,">="&$A${r})-SUMIFS(Estornos!$K$2:$K$500,Estornos!$B$2:$B$500,${col}$3,Estornos!$I$2:$I$500,"<="&$A${r},Estornos!$J$2:$J$500,">="&$A${r}))`, val, FMT_VALOR));
     }
     row.push(F(`SUM(B${r}:${colL(NCART)}${r})`, total, FMT_VALOR));
     fat.push(row);
@@ -2289,7 +2375,8 @@ function interpretarNova(g) {
   const recorrentes = g.Recorrentes.slice(1).filter(r => r[0] && r[4]).map(r => ({
     id: uid(), descricao: String(r[0]), grupo: String(r[1] || 'Fixo'), cartao: r[2] ? String(r[2]) : '',
     categoria: r[3] ? String(r[3]) : 'Outros', valor: Number(r[4]) || 0,
-    inicio: isoData(r[5]) || hoje(), fim: isoData(r[6])
+    inicio: isoData(r[5]) || hoje(), fim: isoData(r[6]),
+    ...(String(r[1] || '') === 'Cartão' && ehProxima(r[8]) ? { prox: true } : {})
   }));
 
   const parcelados = g.Compras_Parceladas.slice(1).filter(r => r[2] && r[3] && r[4]).map(r => {
@@ -2314,10 +2401,13 @@ function interpretarNova(g) {
     id: uid(), mes: mkOf(isoData(r[0])), descricao: String(r[1] || ''), tipo: String(r[2] || 'Despesa'), valor: Number(r[3]) || 0
   }));
 
-  const lancamentos = g.Lancamentos.slice(1).filter(r => r[0] && r[3]).map(r => ({
-    id: uid(), data: isoData(r[0]) || hoje(), descricao: String(r[1] || ''), categoria: String(r[2] || 'Outros'),
-    valor: Number(r[3]) || 0, ...formaECartao(r[4])
-  }));
+  const lancamentos = g.Lancamentos.slice(1).filter(r => r[0] && r[3]).map(r => {
+    const fc = formaECartao(r[4]);
+    return {
+      id: uid(), data: isoData(r[0]) || hoje(), descricao: String(r[1] || ''), categoria: String(r[2] || 'Outros'),
+      valor: Number(r[3]) || 0, ...fc, ...(fc.forma === 'Cartão' && ehProxima(r[5]) ? { prox: true } : {})
+    };
+  });
 
   const om = g.Orcamento_Meses;
   const header = om[2] || [];
