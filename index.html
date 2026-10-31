@@ -353,30 +353,52 @@ const soma = (g, k) => g.reduce((a, r) => a + r[k], 0);
 const abrevMoeda = v => (v < 0 ? '−' : '') + 'R$ ' +
   (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1).replace('.', ',') + 'k' : Math.round(Math.abs(v)));
 
-// Saúde financeira sobre os 36 meses da projeção.
+// Saúde financeira: olha o mês atual e os próximos 12 meses da projeção (não a média de 36 meses,
+// que dilui o aperto de agora com os meses em que as parcelas já terminaram).
+// Limites: despesa do mês atual acima da receita → no máximo 59 (Atenção); saldo acumulado negativo
+// em algum dos 12 meses → no máximo 39 (Crítica); sem orçamento variável → no máximo 79, porque a
+// projeção não teria os gastos do dia a dia.
 function scoreSaude() {
-  const proj = projecao(36);
+  const proj = projecao(36).slice(0, 12);
   const rt = soma(proj, 'rt');
   const saldo = soma(proj, 'saldo');
   const L = soma(proj, 'L');
-  const fixasFat = proj.reduce((a, r) => a + r.ef + r.fat, 0);
+  const pior = (a, f) => a.reduce((x, r) => (f(r) > f(x) ? r : x), a[0]);
+  // Comprometimento do mês mais apertado (fixos + faturas sobre a receita), não a média.
+  const compromMes = r => (r.rt > 0 ? (r.ef + r.fat) / r.rt : (r.ef + r.fat > 0 ? 9.99 : 0));
+  const mesComprom = pior(proj, compromMes), comprom = compromMes(mesComprom);
   const taxa = rt > 0 ? saldo / rt : 0;
-  const comprom = rt > 0 ? fixasFat / rt : 1;
   const positivos = proj.filter(r => r.acum >= 0).length / proj.length;
   const mediaDesp = L / proj.length;
-  const reserva = mediaDesp > 0 ? proj[11].acum / mediaDesp : 0;
+  const reserva = mediaDesp > 0 ? proj[proj.length - 1].acum / mediaDesp : 0;
   const partes = [
     { nome: 'Poupança', peso: 40, valor: clamp01(taxa / 0.40),
-      desc: `Sobra média de ${pctTxt(taxa)} da receita (100 pontos a partir de 40%)` },
+      desc: `Sobra de ${pctTxt(taxa)} da receita nos próximos 12 meses (100 pontos a partir de 40%)` },
     { nome: 'Saldo positivo', peso: 25, valor: positivos,
-      desc: `${Math.round(positivos * 100)}% dos meses com saldo acumulado positivo` },
+      desc: `${Math.round(positivos * 100)}% dos próximos 12 meses com saldo acumulado positivo` },
     { nome: 'Comprometimento', peso: 20, valor: clamp01((0.9 - comprom) / 0.4),
-      desc: `Fixos e faturas consomem ${pctTxt(comprom)} da receita (ideal: até 50%)` },
+      desc: `No mês mais apertado (${mNome(mesComprom.m)}), fixos e faturas consomem ${pctTxt(comprom)} da receita (ideal: até 50%)` },
     { nome: 'Reserva', peso: 15, valor: clamp01(reserva / 6),
-      desc: `Saldo cobre ${reserva.toFixed(1).replace('.', ',')} meses de despesa em 12 meses (meta: 6)` }
+      desc: `Saldo em 12 meses cobre ${reserva.toFixed(1).replace('.', ',')} meses de despesa (meta: 6)` }
   ];
-  const score = Math.round(partes.reduce((a, p) => a + p.valor * p.peso, 0));
-  return { score, partes };
+  const bruto = Math.round(partes.reduce((a, p) => a + p.valor * p.peso, 0));
+  const alertas = [];
+  let teto = 100;
+  const mAtual = mkOf(hoje()), bAtual = mesBase(mAtual);
+  if (bAtual.I > bAtual.rt + 0.005) {
+    teto = Math.min(teto, 59);
+    alertas.push(`Em ${mNome(mAtual)}, as despesas previstas (${brl(bAtual.I)}) passam das receitas (${brl(bAtual.rt)}) em ${brl(bAtual.I - bAtual.rt)}.`);
+  }
+  const neg = proj.find(r => r.acum < 0);
+  if (neg) {
+    teto = Math.min(teto, 39);
+    alertas.push(`O saldo acumulado fica negativo em ${mNome(neg.m)} (${brl(neg.acum)}).`);
+  }
+  if (proj.every(r => totalOrc(r.m) <= 0)) {
+    teto = Math.min(teto, 79);
+    alertas.push('Nenhum orçamento variável definido: a projeção não inclui gastos do dia a dia (mercado, transporte, lazer). Defina na aba Orçamento.');
+  }
+  return { score: Math.min(bruto, teto), bruto, partes, alertas };
 }
 
 // Aderência ao orçado no mês: categorias com orçamento > 0.
@@ -424,10 +446,15 @@ function blocoScores(m = S.config.mesRef) {
       <div class="bar" style="height:10px"><div style="width:${(p.valor * 100).toFixed(1)}%"></div></div>
       <div class="muted">${p.desc}</div>
     </div>`).join('');
+  const limitada = sa.score < sa.bruto;
+  const alertas = sa.alertas.length ? `<div class="aviso" style="margin:0 0 10px;display:block">
+      ${sa.alertas.map(a => `<p style="margin:4px 0">⚠️ ${esc(a)}</p>`).join('')}
+      ${limitada ? `<p class="muted" style="margin:6px 0 0">Pelos quatro critérios abaixo a nota seria ${sa.bruto}; os alertas acima a limitam a ${sa.score}.</p>` : ''}
+    </div>` : '';
   return `<section class="grid">
-    ${gauge(sa.score, 'Saúde financeira · 36 meses', 'Poupança, saldo, comprometimento e reserva')}
+    ${gauge(sa.score, 'Saúde financeira · próximos 12 meses', limitada ? 'Limitada pelos alertas abaixo' : 'Poupança, saldo, comprometimento e reserva')}
     ${gauge(so.score, `Aderência ao orçado · ${mNome(m)}`, so.score == null ? 'Defina o orçamento do mês para pontuar' : `Gasto sem orçamento: ${brl(so.semOrc)}`)}
-    <section class="card" style="grid-column:1/-1"><h2>Como a saúde financeira é calculada</h2>${detalhe}</section>
+    <section class="card" style="grid-column:1/-1"><h2>Como a saúde financeira é calculada</h2>${alertas}${detalhe}</section>
   </section>`;
 }
 
@@ -490,13 +517,15 @@ function graficoProj(grupos) {
 const simEntrada = { valor: 300, categoria: '', mes: '', parcelas: 1 };
 
 // Gastos simulados viram lançamentos (orçamento da categoria) e despesas eventuais (saldo do mês).
+// Forma "Planejada": o lançamento mostra o uso do orçamento da categoria, mas na projeção a compra entra
+// uma vez só, como despesa eventual extra, sem abater o orçamento restante (estimativa conservadora).
 function geraSimulacao({ valor, categoria, mes, parcelas }) {
   const n = Math.max(1, Math.round(parcelas));
   const parcela = Math.round(valor / n * 100) / 100;
   const lancs = [], evs = [];
   for (let i = 0; i < n; i++) {
     const m = addM(mes, i);
-    lancs.push({ id: 'sim' + i, data: m + '-01', descricao: 'Simulação', categoria, valor: parcela, forma: '' });
+    lancs.push({ id: 'sim' + i, data: m + '-01', descricao: 'Simulação', categoria, valor: parcela, forma: 'Planejada' });
     evs.push({ id: 'sim' + i, mes: m, descricao: 'Simulação', tipo: 'Despesa', valor: parcela });
   }
   return { lancs, evs, parcela, n };
@@ -511,17 +540,27 @@ function comGasto(gasto, fn) {
   try { return fn(); } finally { S.lancamentos = L0; S.eventuais = E0; }
 }
 
-// Foto do mês e da categoria com os dados atuais.
-function foto(mes, cat) {
+// Foto do mês e da categoria com os dados atuais. Olha os primeiros 12 meses e cada mês em que a compra
+// cai (n parcelas), em vez de médias ou do fim dos 36 meses, que diluem o aperto dos primeiros meses.
+const HORIZ_SIM = 12;
+function foto(mes, cat, n = 1) {
   const orc = Number(orcEfetivo(mes)[cat]) || 0;
   const exec = execCat(cat, mes);
   const proj = projecao(36);
-  const linha = proj.find(r => r.m === mes);
+  const p12 = proj.slice(0, HORIZ_SIM);
+  // Saldo de um mês: da projeção; se o mês for anterior a ela (ex.: o mês atual), receita − despesa do mês.
+  const saldoDe = m => { const r = proj.find(x => x.m === m); if (r) return r.saldo; const b = mesBase(m); return b.rt - b.I; };
   const negativo = proj.find(r => r.acum < 0);
+  const neg12 = p12.find(r => r.acum < 0);
+  const minR = p12.reduce((a, r) => (r.acum < a.acum ? r : a), p12[0]);
   return {
     orc, exec,
-    saldoMes: linha ? linha.saldo : 0,
-    acumFim: proj[proj.length - 1].acum,
+    saldoMes: saldoDe(mes),
+    mesesCompra: Array.from({ length: Math.max(1, n) }, (_, i) => { const m = addM(mes, i); return { m, saldo: saldoDe(m) }; }),
+    minAcum: minR.acum, minAcumMes: minR.m,
+    despMedia12: soma(p12, 'L') / p12.length,
+    vermelho12: p12.filter(r => r.saldo < 0).length,
+    neg12: neg12 ? neg12.m : null,
     primeiroNeg: negativo ? negativo.m : null,
     scoreOrc: scoreOrcamento(mes).score,
     scoreSau: scoreSaude().score
@@ -541,36 +580,41 @@ function simRodar(e) {
 const txtScore = v => (v == null ? '—' : v + '/100');
 const txtNeg = v => (v == null ? 'nenhum' : mNome(v));
 
-// Veredito com comentários. Regras: "Não recomendado" (estoura o orçamento ou torna o saldo negativo),
-// "com cuidado" (deixa pouco no orçamento ou derruba a pontuação em 10+ pontos), "possível" (demais casos).
+// Veredito conservador, com comentários. Olha os primeiros meses, não médias:
+// "Não recomendado": estoura o orçamento; algum mês em que a compra cai fica no vermelho (mesmo que já
+//   estivesse); o saldo acumulado fica (ou já está) negativo nos próximos 12 meses; ou fica negativo depois.
+// "Com cuidado": sobra menos de 20% do orçamento; o menor saldo dos próximos 12 meses fica abaixo de um mês
+//   de despesas; ou alguma pontuação cai 10+ pontos.
+// "Possível": demais casos.
 function veredito(a, d, g) {
   const motivos = [];
   let nivel = 'ok';
+  const nao = t => { nivel = 'nao'; motivos.push(t); };
+  const cuidado = t => { if (nivel === 'ok') nivel = 'cuidado'; motivos.push(t); };
   const restD = d.orc - d.exec;
-  if (d.orc > 0 && restD < 0) {
-    nivel = 'nao';
-    motivos.push(`Estoura o orçamento de ${g.categoria} em ${brl(-restD)}.`);
-  } else if (d.orc > 0 && restD < d.orc * 0.2) {
-    nivel = 'cuidado';
-    motivos.push(`Deixa só ${brl(restD)} do orçamento de ${g.categoria} para o resto do mês (menos de 20%).`);
+  if (d.orc > 0 && restD < 0) nao(`Estoura o orçamento de ${g.categoria} em ${brl(-restD)}.`);
+  else if (d.orc > 0 && restD < d.orc * 0.2) cuidado(`Deixa só ${brl(restD)} do orçamento de ${g.categoria} para o resto do mês (menos de 20%).`);
+  // Cada mês em que a compra (ou uma parcela) cai.
+  const vermelhos = (d.mesesCompra || [{ m: g.mes, saldo: d.saldoMes }]).filter(x => x.saldo < -0.005);
+  if (vermelhos.length) {
+    const x = vermelhos[0], antesX = (a.mesesCompra || []).find(y => y.m === x.m);
+    nao(antesX && antesX.saldo < -0.005
+      ? `${mNome(x.m)} já fica no vermelho (${brl(antesX.saldo)}) e a compra aumenta o rombo para ${brl(x.saldo)}${vermelhos.length > 1 ? `; ${vermelhos.length} meses da compra ficam no vermelho` : ''}.`
+      : `Deixa ${mNome(x.m)} no vermelho: saldo do mês de ${brl(x.saldo)}${vermelhos.length > 1 ? `; ${vermelhos.length} meses da compra ficam no vermelho` : ''}.`);
   }
-  if (d.primeiroNeg && (!a.primeiroNeg || mIdx(d.primeiroNeg) < mIdx(a.primeiroNeg))) {
-    nivel = 'nao';
-    motivos.push(`Faz o saldo acumulado ficar negativo a partir de ${mNome(d.primeiroNeg)}.`);
+  // Saldo acumulado nos próximos 12 meses.
+  if (d.neg12) {
+    nao(a.neg12
+      ? `O saldo acumulado já fica negativo em ${mNome(a.neg12)}; com a compra, o pior momento vai a ${brl(d.minAcum)} (${mNome(d.minAcumMes)}).`
+      : `Faz o saldo acumulado ficar negativo em ${mNome(d.neg12)} (pior momento: ${brl(d.minAcum)}).`);
+  } else if (d.primeiroNeg && (!a.primeiroNeg || mIdx(d.primeiroNeg) < mIdx(a.primeiroNeg))) {
+    nao(`Faz o saldo acumulado ficar negativo a partir de ${mNome(d.primeiroNeg)}.`);
+  } else if (d.despMedia12 > 0 && d.minAcum < d.despMedia12) {
+    cuidado(`O menor saldo dos próximos 12 meses fica em ${brl(d.minAcum)} (${mNome(d.minAcumMes)}), menos de um mês de despesas (${brl(d.despMedia12)}).`);
   }
-  if (d.saldoMes < 0 && a.saldoMes >= 0) {
-    nivel = 'nao';
-    motivos.push(`Deixa o mês no vermelho: saldo de ${brl(d.saldoMes)}.`);
-  }
-  if (a.scoreSau != null && d.scoreSau != null && a.scoreSau - d.scoreSau >= 10) {
-    if (nivel === 'ok') nivel = 'cuidado';
-    motivos.push(`Reduz a saúde financeira de ${a.scoreSau} para ${d.scoreSau} pontos.`);
-  }
-  if (a.scoreOrc != null && d.scoreOrc != null && a.scoreOrc - d.scoreOrc >= 10) {
-    if (nivel === 'ok') nivel = 'cuidado';
-    motivos.push(`Reduz a aderência ao orçamento de ${a.scoreOrc} para ${d.scoreOrc} pontos.`);
-  }
-  if (nivel === 'ok') motivos.unshift('Cabe no orçamento da categoria e não compromete o saldo projetado.');
+  if (a.scoreSau != null && d.scoreSau != null && a.scoreSau - d.scoreSau >= 10) cuidado(`Reduz a saúde financeira de ${a.scoreSau} para ${d.scoreSau} pontos.`);
+  if (a.scoreOrc != null && d.scoreOrc != null && a.scoreOrc - d.scoreOrc >= 10) cuidado(`Reduz a aderência ao orçamento de ${a.scoreOrc} para ${d.scoreOrc} pontos.`);
+  if (nivel === 'ok') motivos.unshift('Cabe no orçamento da categoria, nenhum mês da compra fica no vermelho e o saldo dos próximos 12 meses continua com folga.');
   return { nivel, motivos };
 }
 
@@ -608,13 +652,15 @@ function infografico(a, d, g) {
 
 function simuladorBase() {
   const cats = S.config.categorias;
-  const meses = Array.from({ length: 36 }, (_, i) => addM(S.config.primeiroMes, i));
+  // Começa no mês atual, se ele for anterior ao 1º mês da projeção: compras de agora também podem ser simuladas.
+  const ini = mIdx(mkOf(hoje())) < mIdx(S.config.primeiroMes) ? mkOf(hoje()) : S.config.primeiroMes;
+  const meses = Array.from({ length: 36 + mIdx(S.config.primeiroMes) - mIdx(ini) }, (_, i) => addM(ini, i));
   if (!cats.includes(simEntrada.categoria)) simEntrada.categoria = cats[0];
   if (!meses.includes(simEntrada.mes)) simEntrada.mes = meses[0];
   const g = { ...simEntrada };
   const formulario = `
     <section class="card"><h2>Simulador de gasto</h2>
-      <p class="muted">Veja como uma compra planejada mexe no orçamento da categoria, no saldo do mês e nas pontuações. Nada é salvo: para registrar a compra, use a aba Lançamentos ou Parcelamentos.</p>
+      <p class="muted">Veja como uma compra planejada mexe no orçamento da categoria, no saldo dos próximos meses e nas pontuações. Simular não salva nada; para registrar, use "Lançar esta compra", logo abaixo.</p>
       <form class="fields" onsubmit="simRodar(event)">
         <label>Valor total (R$) <input name="valor" type="number" step="0.01" min="0" value="${g.valor}" required></label>
         <label>Categoria <select name="categoria">${opts(cats, g.categoria)}</select></label>
@@ -622,11 +668,12 @@ function simuladorBase() {
         <label>Parcelas <input name="parcelas" type="number" min="1" max="36" value="${g.parcelas}"></label>
         <div class="row"><button>Simular</button></div>
       </form>
+      ${g.valor > 0 ? formSimLancar(g) : ''}
     </section>`;
   if (!(g.valor > 0)) return formulario + '<section class="card"><p class="muted">Informe um valor maior que zero.</p></section>';
 
-  const antes = foto(g.mes, g.categoria);
-  const depois = comGasto(g, () => foto(g.mes, g.categoria));
+  const antes = foto(g.mes, g.categoria, g.parcelas);
+  const depois = comGasto(g, () => foto(g.mes, g.categoria, g.parcelas));
   const { parcela, n } = geraSimulacao(g);
   const restAntes = antes.orc - antes.exec, restDepois = depois.orc - depois.exec;
   const estoura = antes.orc > 0 && restDepois < 0;
@@ -662,7 +709,8 @@ function simuladorBase() {
         <thead><tr><th>Indicador</th><th class="num">Antes</th><th class="num">Depois</th></tr></thead>
         <tbody>
           ${linhaComparacao('Saldo do mês (se for gasto extra, fora do orçamento)', antes.saldoMes, depois.saldoMes)}
-          ${linhaComparacao('Saldo acumulado no fim de 36 meses', antes.acumFim, depois.acumFim)}
+          <tr><th>Menor saldo acumulado nos próximos 12 meses</th><td class="num ${antes.minAcum < 0 ? 'neg' : ''}">${brl(antes.minAcum)} <span class="muted">(${mNome(antes.minAcumMes)})</span></td><td class="num ${depois.minAcum < 0 ? 'neg' : ''}">${brl(depois.minAcum)} <span class="muted">(${mNome(depois.minAcumMes)})</span></td></tr>
+          <tr><th>Meses no vermelho nos próximos 12 meses</th><td class="num">${antes.vermelho12}</td><td class="num">${depois.vermelho12}</td></tr>
           <tr><th>Primeiro mês com saldo acumulado negativo</th><td class="num">${txtNeg(antes.primeiroNeg)}</td><td class="num">${txtNeg(depois.primeiroNeg)}</td></tr>
           <tr><th>Pontuação de orçamento do mês</th><td class="num">${txtScore(antes.scoreOrc)}</td><td class="num">${txtScore(depois.scoreOrc)}</td></tr>
           <tr><th>Pontuação de saúde financeira</th><td class="num">${txtScore(antes.scoreSau)}</td><td class="num">${txtScore(depois.scoreSau)}</td></tr>
@@ -674,8 +722,8 @@ function simuladorBase() {
 
 // Maior valor que ainda dá "Compra possível" (busca por bisseção, em centavos).
 function maxPossivel(mes, cat, parcelas) {
-  const a = foto(mes, cat);
-  const ok = v => v <= 0 || comGasto({ valor: v, categoria: cat, mes, parcelas }, () => veredito(a, foto(mes, cat), { categoria: cat })).nivel === 'ok';
+  const a = foto(mes, cat, parcelas);
+  const ok = v => v <= 0 || comGasto({ valor: v, categoria: cat, mes, parcelas }, () => veredito(a, foto(mes, cat, parcelas), { categoria: cat, mes })).nivel === 'ok';
   if (!ok(0.01)) return 0;
   let lo = 0, hi = 1e6;
   if (ok(hi)) return hi;
@@ -685,45 +733,71 @@ function maxPossivel(mes, cat, parcelas) {
 
 // O mesmo valor total, em opções diferentes de parcelamento.
 function cenarios(valor, cat, mes, opcoes) {
-  const a = foto(mes, cat);
   return opcoes.map(n => {
     const g = { valor, categoria: cat, mes, parcelas: n };
-    const d = comGasto(g, () => foto(mes, cat));
-    return { n, parcela: geraSimulacao(g).parcela, nivel: veredito(a, d, { categoria: cat }).nivel, restante: d.orc - d.exec };
+    const a = foto(mes, cat, n);
+    const d = comGasto(g, () => foto(mes, cat, n));
+    return { n, parcela: geraSimulacao(g).parcela, nivel: veredito(a, d, g).nivel, restante: d.orc - d.exec };
   });
 }
 
-// Meta: quanto guardar por mês para juntar o valor até a data, com a sobra média prevista.
+// Meta: quanto guardar por mês para juntar o valor até a data. Conservadora: a meta só é viável se a
+// sobra de TODOS os meses do período cobrir o valor mensal (o mês mais apertado decide, não a média).
 function metaCompra(valor, alvo) {
   const meses = Math.max(1, mIdx(alvo) - mIdx(mkOf(hoje())));
   const porMes = valor / meses;
   const linhas = projecao(36).filter(r => mIdx(r.m) >= mIdx(S.config.primeiroMes) && mIdx(r.m) <= mIdx(alvo));
   const saldoMedio = linhas.length ? linhas.reduce((t, r) => t + r.saldo, 0) / linhas.length : 0;
-  return { meses, porMes, saldoMedio, viavel: saldoMedio >= porMes, mesesNecessarios: saldoMedio > 0 ? Math.ceil(valor / saldoMedio) : null };
+  const pior = linhas.length ? linhas.reduce((a, r) => (r.saldo < a.saldo ? r : a), linhas[0]) : null;
+  const saldoMin = pior ? pior.saldo : 0;
+  return { meses, porMes, saldoMedio, saldoMin, mesMin: pior ? pior.m : null, viavel: saldoMin >= porMes,
+    mesesNecessarios: saldoMin > 0 ? Math.ceil(valor / saldoMin) : null };
 }
 
-// Registra a compra simulada: no cartão (parcelado) ou no saldo do mês (lançamentos + despesas eventuais).
-function registrarCompra(g, descricao, cartao) {
+// Lançar a compra simulada, logo abaixo do botão Simular, com os mesmos campos da aba Lançamentos.
+// Valor, categoria e parcelas vêm da simulação; as opções fixas da aba Lançamentos são usadas como padrão.
+function formSimLancar(g) {
+  const fx = lancFixo || {};
+  const n = Math.max(1, Math.round(g.parcelas));
+  const forma = n > 1 ? 'Cartão' : (fx.forma || 'Cartão');
+  const comCartao = forma === 'Cartão';
+  // Data padrão: hoje, se a simulação for no mês atual; senão, o 1º dia do mês simulado.
+  const data = g.mes === mkOf(hoje()) ? hoje() : g.mes + '-01';
+  return `<form class="fields" id="formSimLanc" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)" onsubmit="simLancar(event)">
+      <label>Data<input type="date" name="data" value="${data}" required></label>
+      <label>Descrição<input type="text" name="descricao" required placeholder="Ex.: Notebook"></label>
+      <label>Forma<select name="forma" onchange="simTogCampos(this.form)">${opts(n > 1 ? ['Cartão'] : FORMAS, forma)}</select></label>
+      <label id="lbl-sim-cartao" ${comCartao ? '' : 'hidden'}>Cartão<select name="cartao"><option value=""></option>${opts(S.config.cartoes, fx.cartao)}</select></label>
+      <label id="lbl-sim-fatura" ${comCartao ? '' : 'hidden'}>Fatura<select name="fatura">${optsFatura(fx.fatura === 'prox')}</select></label>
+      <div class="row"><button>Lançar esta compra</button></div>
+    </form>
+    <p class="muted" style="margin-top:8px">Lança ${brl(g.valor)} em ${esc(g.categoria)}${n > 1 ? `, em ${n}x de ${brl(geraSimulacao(g).parcela)} no cartão (a 1ª parcela segue a data e a fatura escolhidas)` : ''}, do mesmo jeito que a aba Lançamentos.</p>`;
+}
+function simTogCampos(form) {
+  const cartao = form.elements.forma.value === 'Cartão';
+  form.querySelector('#lbl-sim-cartao').hidden = !cartao;
+  form.querySelector('#lbl-sim-fatura').hidden = !cartao;
+}
+function simLancar(e) {
+  e.preventDefault();
+  const f = e.target.elements, g = { ...simEntrada };
+  if (!(g.valor > 0)) return alert('Informe um valor maior que zero na simulação.');
+  const descricao = f.descricao.value.trim();
+  if (!descricao) return alert('Informe a descrição.');
+  const cartao = f.forma.value === 'Cartão';
+  if (cartao && !f.cartao.value) return alert('Escolha o cartão.');
+  const prox = cartao && f.fatura.value === 'prox';
   const { parcela, n } = geraSimulacao(g);
-  const nome = descricao || 'Compra planejada';
-  if (cartao) {
-    S.parcelados.push({ id: uid(), dataCompra: hoje(), cartao, descricao: nome, categoria: g.categoria, valorTotal: g.valor, parcelas: n, inicio: g.mes, valorParcela: parcela });
+  if (n > 1) {
+    S.parcelados.push({ id: uid(), dataCompra: f.data.value, cartao: f.cartao.value, descricao, categoria: g.categoria,
+      valorTotal: Math.round(parcela * n * 100) / 100, valorParcela: parcela, parcelas: n,
+      inicio: addM(mkOf(f.data.value), prox ? 1 : 0) });
   } else {
-    for (let i = 0; i < n; i++) {
-      const m = addM(g.mes, i);
-      S.lancamentos.push({ id: uid(), data: m + '-01', descricao: nome, categoria: g.categoria, valor: parcela, forma: 'Planejada' });
-      S.eventuais.push({ id: uid(), mes: m, descricao: nome, tipo: 'Despesa', valor: parcela });
-    }
+    S.lancamentos.push({ id: uid(), data: f.data.value, descricao, categoria: g.categoria, forma: f.forma.value,
+      cartao: cartao ? f.cartao.value : '', valor: g.valor, ...(prox ? { prox: true } : {}) });
   }
   commit();
-}
-
-function registrarSim(e) {
-  e.preventDefault();
-  if (!(simEntrada.valor > 0)) return alert('Informe um valor maior que zero na simulação.');
-  const f = new FormData(e.target);
-  registrarCompra({ ...simEntrada }, f.get('descricao'), f.get('cartao'));
-  alert('Compra registrada. Ela aparece em Lançamentos e na projeção.');
+  alert(`Compra lançada: ${descricao}, ${brl(g.valor)}${n > 1 ? ` em ${n}x` : ''}. Ela aparece em Lançamentos${cartao ? ' e na fatura do cartão' : ''}.`);
 }
 
 const metaEntrada = { valor: 1200, alvo: '' };
@@ -746,7 +820,7 @@ function blocosSimulador() {
     const maior = maxPossivel(g.mes, g.categoria, g.parcelas);
     out += `<section class="card"><h2>Quanto posso gastar?</h2>
       <p>Em <strong>${esc(g.categoria)}</strong>, ${mNome(g.mes)}, com ${g.parcelas} parcela(s), o maior valor que ainda dá <strong style="color:${VCORES.ok}">Compra possível</strong> é <strong>${brl(maior)}</strong>.</p>
-      <p class="muted">Usa as mesmas regras do veredito: cabe no orçamento da categoria com pelo menos 20% de folga e não deixa o saldo negativo.</p>
+      <p class="muted">Usa as mesmas regras do veredito: cabe no orçamento da categoria com pelo menos 20% de folga, nenhum mês da compra fica no vermelho e o saldo dos próximos 12 meses continua com pelo menos um mês de despesas.</p>
     </section>`;
     const cen = cenarios(g.valor, g.categoria, g.mes, [1, 3, 6, 10, 12]);
     out += `<section class="card"><h2>Comparar parcelamentos</h2>
@@ -755,26 +829,19 @@ function blocosSimulador() {
         ${cen.map(c => `<tr><td>${c.n}x</td><td class="num">${brl(c.parcela)}</td><td style="color:${VCORES[c.nivel]}">${VROT[c.nivel]}</td><td class="num">${brl(c.restante)}</td></tr>`).join('')}
       </tbody></table></div>
     </section>`;
-    out += `<section class="card"><h2>Registrar esta compra</h2>
-      <p class="muted">Registra ${brl(g.valor)} em ${esc(g.categoria)}, ${g.parcelas}x a partir de ${mNome(g.mes)}. Com cartão, entra na fatura; sem cartão, entra como gasto do saldo do mês.</p>
-      <form class="fields" onsubmit="registrarSim(event)">
-        <label>Descrição <input name="descricao" placeholder="Ex.: Notebook" required></label>
-        <label>Cartão <select name="cartao"><option value="">Sem cartão</option>${S.config.cartoes.map(c => `<option>${esc(c)}</option>`).join('')}</select></label>
-        <div class="row"><button>Registrar compra</button></div>
-      </form>
-    </section>`;
   }
   const meta = metaEntrada.alvo ? metaCompra(metaEntrada.valor, metaEntrada.alvo) : null;
   out += `<section class="card"><h2>Meta de compra</h2>
-    <p class="muted">Quanto guardar por mês para juntar um valor até uma data, comparado com a sobra média prevista.</p>
+    <p class="muted">Quanto guardar por mês para juntar um valor até uma data, comparado com a sobra do mês mais apertado do período.</p>
     <form class="fields" onsubmit="metaRodar(event)">
       <label>Quanto quero juntar (R$) <input name="valor" type="number" min="1" step="0.01" value="${metaEntrada.valor}" required></label>
       <label>Até quando <select name="alvo">${meses.map(m => `<option value="${m}" ${m === (metaEntrada.alvo || meses[11]) ? 'selected' : ''}>${mNome(m)}</option>`).join('')}</select></label>
       <div class="row"><button>Calcular meta</button></div>
     </form>
     ${meta ? `<p style="margin-top:12px">Para juntar ${brl(metaEntrada.valor)} até ${mNome(metaEntrada.alvo)}, guarde <strong>${brl(meta.porMes)}</strong> por mês (${meta.meses} mês(es)).</p>
-      <p>Sobra média prevista: <strong>${brl(meta.saldoMedio)}</strong> por mês.</p>
-      <p style="color:${meta.viavel ? VCORES.ok : VCORES.nao}"><strong>${meta.viavel ? 'Meta viável com a sobra prevista.' : (meta.mesesNecessarios ? `Com a sobra prevista, levaria cerca de ${meta.mesesNecessarios} meses.` : 'Com a sobra prevista, a meta não fecha.')}</strong></p>`
+      <p>Sobra no mês mais apertado do período${meta.mesMin ? ` (${mNome(meta.mesMin)})` : ''}: <strong class="${meta.saldoMin < 0 ? 'neg' : ''}">${brl(meta.saldoMin)}</strong> · sobra média: ${brl(meta.saldoMedio)}.</p>
+      <p style="color:${meta.viavel ? VCORES.ok : VCORES.nao}"><strong>${meta.viavel ? 'Meta viável: mesmo o mês mais apertado sobra o suficiente.'
+        : (meta.mesesNecessarios ? `No mês mais apertado sobra menos do que o necessário. Guardando essa sobra, levaria cerca de ${meta.mesesNecessarios} meses.` : 'Há mês sem sobra no período: a meta não fecha sem cortar gastos.')}</strong></p>`
       : '<p class="muted" style="margin-top:12px">Escolha o valor e a data e clique em Calcular meta.</p>'}
   </section>`;
   return out;
