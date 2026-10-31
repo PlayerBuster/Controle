@@ -11,6 +11,7 @@ before(async () => { pg = await abrirApp(); });
 after(async () => { await fecharNavegador(); });
 
 const ir = async k => { await pg.evaluate(k => ir(k), k); };
+const addMesStr = (m, n) => { const k = Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)) - 1 + n; return `${Math.floor(k / 12)}-${String(k % 12 + 1).padStart(2, '0')}`; };
 const visivel = sel => pg.evaluate(s => { const el = document.querySelector(s); return !!el && !el.hidden; }, sel);
 
 test('todas as abas abrem sem erro, com os dados de exemplo', async () => {
@@ -454,6 +455,106 @@ test('Conta: gasto em Pix sai da conta sozinho; no cartão, não; entradas manua
   await pg.click(`button[onclick^="excluir('movConta'"]`);
   assert.equal(await avaliar(pg, `saldoContaEm(hoje())`), 420);
   assert.deepEqual(pg.erros, []);
+});
+
+/* ---------- Simulador ---------- */
+// Receita 2.700, fixo 100, orçamento 800 em Alimentação (sobra 1.800/mês); começa no mês atual.
+// As compras simuladas vão em Lazer, que não tem orçamento: só as regras de saldo decidem.
+const dadosSim = async extra => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  return { m, dados: { config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 0 },
+    recorrentes: [
+      { id: 'r1', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 2700, inicio: '2020-01-01', fim: '' },
+      { id: 'r2', descricao: 'Internet', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 100, inicio: '2020-01-01', fim: '' }],
+    orcamento: { 'Alimentação': 800 }, ...extra(m) } };
+};
+const simular = async (m, valor, parcelas, categoria = 'Lazer') => {
+  await pg.evaluate(([mm, v, p, c]) => { Object.assign(simEntrada, { valor: v, parcelas: p, mes: mm, categoria: c }); ir('simulador'); }, [m, valor, parcelas, categoria]);
+  return pg.evaluate(() => {
+    const g = { ...simEntrada };
+    const a = foto(g.mes, g.categoria, g.parcelas), d = comGasto(g, () => foto(g.mes, g.categoria, g.parcelas));
+    return veredito(a, d, g);
+  });
+};
+
+test('Simulador: com o saldo já negativo nos próximos meses, nenhuma compra extra é "possível"', async () => {
+  // Parcelado de 2.500 por mês nos 3 primeiros meses: o acumulado já fica negativo antes de simular.
+  const { m, dados } = await dadosSim(m => ({ parcelados: [
+    { id: 'p', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'TV', categoria: 'Outros', valorTotal: 7500, parcelas: 3, inicio: m }] }));
+  await definirDados(pg, dados);
+  const v = await simular(m, 50, 1);
+  assert.equal(v.nivel, 'nao');
+  assert.ok(v.motivos.some(t => /já fica no vermelho|já fica negativo/.test(t)), v.motivos.join(' | '));
+});
+
+test('Simulador: parcela que cai num mês apertado reprova, mesmo com o 1º mês folgado', async () => {
+  // Sobra 1.800/mês, com saldo inicial de 5.000. No 3º mês há uma despesa eventual de 1.700 (sobra só 100).
+  const { m, dados } = await dadosSim(m => ({ config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 5000 },
+    eventuais: [{ id: 'v', mes: addMesStr(m, 2), descricao: 'IPVA', tipo: 'Despesa', valor: 1700 }] }));
+  await definirDados(pg, dados);
+  // 3x de 300: o 1º mês fica com sobra, mas o 3º vai a −200.
+  const v = await simular(m, 900, 3);
+  assert.equal(v.nivel, 'nao');
+  assert.ok(v.motivos.some(t => /no vermelho/.test(t)), v.motivos.join(' | '));
+  // À vista no 1º mês, o mesmo valor cabe.
+  const v1 = await simular(m, 900, 1);
+  assert.notEqual(v1.nivel, 'nao', v1.motivos.join(' | '));
+});
+
+test('Simulador: pouco saldo nos próximos 12 meses dá "com cuidado"', async () => {
+  // Sem saldo inicial, sobra 1.800/mês; uma compra de 1.700 no 1º mês deixa o pior saldo bem abaixo de um mês de despesas.
+  const { m, dados } = await dadosSim(() => ({}));
+  await definirDados(pg, dados);
+  const v = await simular(m, 1700, 1);
+  assert.equal(v.nivel, 'cuidado', v.motivos.join(' | '));
+  assert.ok(v.motivos.some(t => /menos de um mês de despesas/.test(t)));
+});
+
+test('Simulador: a compra simulada entra uma vez só na projeção', async () => {
+  const { m, dados } = await dadosSim(() => ({}));
+  await definirDados(pg, dados);
+  const r = await pg.evaluate(mm => {
+    const antes = mesBase(mm).I;
+    // Em Lazer (sem orçamento) a contagem dupla não é compensada pelo orçamento restante.
+    const depois = comGasto({ valor: 500, categoria: 'Lazer', mes: mm, parcelas: 1 }, () => mesBase(mm).I);
+    return depois - antes;
+  }, m);
+  assert.equal(Math.round(r * 100) / 100, 500);
+});
+
+test('Simulador: "Lançar esta compra" fica junto do Simular e grava como na aba Lançamentos', async () => {
+  const { m, dados } = await dadosSim(() => ({}));
+  await definirDados(pg, dados);
+  await simular(m, 120, 1, 'Alimentação');
+  const f = '#formSimLanc';
+  assert.equal(await pg.evaluate(() => !!document.querySelector('form[onsubmit="simRodar(event)"]').closest('section').querySelector('#formSimLanc')), true);
+  await pg.fill(`${f} [name=descricao]`, 'Mercado grande');
+  await pg.selectOption(`${f} [name=forma]`, 'Cartão');
+  await pg.selectOption(`${f} [name=cartao]`, 'Nubank');
+  await pg.selectOption(`${f} [name=fatura]`, 'prox');
+  await pg.click(`${f} button`);
+  assert.deepEqual(await avaliar(pg, `S.lancamentos.map(l => [l.descricao, l.categoria, l.forma, l.cartao, l.valor, !!l.prox])`),
+    [['Mercado grande', 'Alimentação', 'Cartão', 'Nubank', 120, true]]);
+  // Parcelado: só no cartão, com a 1ª parcela pela data e pela fatura.
+  await simular(m, 900, 3, 'Lazer');
+  assert.deepEqual(await pg.$$eval(`${f} [name=forma] option`, os => os.map(o => o.value)), ['Cartão']);
+  await pg.fill(`${f} [name=descricao]`, 'Viagem');
+  await pg.selectOption(`${f} [name=cartao]`, 'Nubank');
+  await pg.click(`${f} button`);
+  const p = await avaliar(pg, `S.parcelados.map(p => [p.descricao, p.parcelas, p.valorParcela, p.inicio, p.categoria])`);
+  assert.deepEqual(p, [['Viagem', 3, 300, m, 'Lazer']]);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Simulador: meta de compra usa o mês mais apertado, não a média', async () => {
+  const { m, dados } = await dadosSim(m => ({ config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 0 },
+    eventuais: [{ id: 'v', mes: addMesStr(m, 1), descricao: 'IPVA', tipo: 'Despesa', valor: 1700 }] }));
+  await definirDados(pg, dados);
+  // 6 meses: sobra 1.800 em quase todos, mas só 100 no 2º. Guardar 600/mês não é viável.
+  const r = await pg.evaluate(mm => metaCompra(3600, addM(mm, 6)), m);
+  assert.equal(r.saldoMin, 100);
+  assert.ok(r.saldoMedio > 600);
+  assert.equal(r.viavel, false);
 });
 
 test('Faturas: lista inclui meses antes da projeção com compras (até 12 meses) e abre no mês atual', async () => {
