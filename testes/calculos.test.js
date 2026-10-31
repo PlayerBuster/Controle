@@ -9,6 +9,7 @@ before(async () => { pg = await abrirApp(); });
 after(async () => { assert.deepEqual(pg.erros, [], 'erros de JavaScript na página'); await fecharNavegador(); });
 
 const cenario = async (dados, expr) => { await definirDados(pg, dados); return avaliar(pg, expr); };
+const addMesStr = (m, n) => { const k = Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)) - 1 + n; return `${Math.floor(k / 12)}-${String(k % 12 + 1).padStart(2, '0')}`; };
 const itens = (m, cartao) => `linhasFatura('${m}').find(b => b.cartao === '${cartao}')`;
 
 /* ---------- utilitários de data ---------- */
@@ -281,32 +282,59 @@ const saude = async extra => {
   return cenario(dados, `scoreSaude()`);
 };
 
-test('saúde: finanças folgadas, sem alertas', async () => {
+const tv = (m, porMes, n = 3) => ({ id: 'p', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'TV', categoria: 'Outros', valorTotal: porMes * n, parcelas: n, inicio: m });
+
+test('saúde: finanças folgadas, sem alertas nem penalidade', async () => {
   // Sobra 1.800 por mês (2.700 − 100 − 800) e há 10.000 em conta.
   const s = await saude(m => ({ config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 10000 } }));
   assert.deepEqual(s.alertas, []);
-  assert.equal(s.score, s.bruto);
-  assert.ok(s.score >= 80, `nota ${s.score}`);
+  assert.equal(s.piora, 0);
+  assert.deepEqual([s.score, s.bruto, s.ponderado], [100, 100, 100]);
+  assert.deepEqual(s.horizontes.map(x => [x.h, x.peso]), [[3, 0.5], [6, 0.3], [12, 0.2]]);
 });
 
-test('saúde: despesa do mês atual acima da receita limita a nota a 59, mesmo com saldo', async () => {
-  // Fatura de 2.500 neste mês (compra parcelada em 3x que começa agora); saldo inicial alto mantém o acumulado positivo.
-  const s = await saude(m => ({
-    config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 20000 },
-    parcelados: [{ id: 'p', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'TV', categoria: 'Outros', valorTotal: 7500, parcelas: 3, inicio: m }] }));
-  assert.ok(s.bruto > 59, `nota sem limite ${s.bruto}`);
-  assert.equal(s.score, 59);
+test('saúde: gastar mais do que recebe nos próximos 3 meses limita a nota a 25, mesmo com saldo', async () => {
+  // Fatura de 2.500 nos 3 primeiros meses: despesa 3.400 > receita 2.700. Saldo alto mantém o acumulado positivo.
+  const s = await saude(m => ({ config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 20000 }, parcelados: [tv(m, 2500)] }));
+  assert.ok(s.score <= 25, `nota ${s.score}`);
+  assert.match(s.alertas.find(a => /passam das receitas/.test(a)), /em R\$\s*700,00; 3 dos próximos 12 meses gastam mais do que recebem/);
+  // Com déficit, não há poupança nos 3 meses, por mais que sobre depois.
+  assert.match(s.partes.find(p => p.nome === 'Poupança').desc, /déficit.*poupança zero.*3m 0/);
+});
+
+test('saúde: déficit só no 2º semestre limita a nota a 39', async () => {
+  const s = await saude(m => ({ config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 20000 },
+    eventuais: [{ id: 'v', mes: addMesStr(m, 8), descricao: 'IPVA', tipo: 'Despesa', valor: 3000 }] }));
+  assert.equal(s.score, 39);
   assert.equal(s.alertas.length, 1);
-  assert.match(s.alertas[0], /passam das receitas .* em R\$\s*700,00/);
 });
 
-test('saúde: saldo acumulado negativo nos próximos 12 meses limita a nota a 39', async () => {
-  const s = await saude(m => ({
-    parcelados: [{ id: 'p', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'TV', categoria: 'Outros', valorTotal: 7500, parcelas: 3, inicio: m }] }));
-  assert.ok(s.score <= 39, `nota ${s.score}`);
+test('saúde: saldo acumulado negativo zera a reserva e limita a nota', async () => {
+  const s = await saude(m => ({ parcelados: [tv(m, 2500)] }));
+  assert.ok(s.score <= 25, `nota ${s.score}`);
   assert.ok(s.alertas.some(a => /saldo acumulado fica negativo/.test(a)));
+  assert.equal(s.partes.find(p => p.nome === 'Reserva').valor, 0);
   // O comprometimento olha o mês mais apertado: 100 + 2.500 sobre 2.700 = 96,3%.
   assert.match(s.partes.find(p => p.nome === 'Comprometimento').desc, /96,3%/);
+});
+
+test('saúde: próximos 3 meses piores que os 6 tiram a diferença da nota e avisam', async () => {
+  // Fatura de 1.600 nos 3 primeiros meses: sobra só 200/mês agora e 1.800/mês depois. Sem déficit.
+  const s = await saude(m => ({ config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 0 }, parcelados: [tv(m, 1600)] }));
+  const [h3, h6] = s.horizontes;
+  assert.ok(h3.score < h6.score, `3m ${h3.score} · 6m ${h6.score}`);
+  assert.equal(s.piora, h6.score - h3.score);
+  assert.equal(s.bruto, s.ponderado - s.piora);
+  assert.equal(s.score, s.bruto);
+  assert.ok(s.alertas.some(a => new RegExp(`3 meses \\(nota ${h3.score}\\) estão piores que os próximos 6 \\(nota ${h6.score}\\)`).test(a)));
+});
+
+test('saúde: o mês atual entra mesmo antes do 1º mês da projeção', async () => {
+  // A projeção começa no mês que vem; o déficit deste mês continua pesando.
+  const s = await saude(m => ({ config: { cartoes: ['Nubank'], primeiroMes: addMesStr(m, 1), saldoConta: 20000 },
+    parcelados: [tv(m, 2500, 1)] }));
+  assert.equal(s.score, 25);
+  assert.ok(s.alertas.some(a => a.startsWith('Em ') && /passam das receitas/.test(a)));
 });
 
 test('saúde: sem orçamento variável a nota fica em no máximo 79', async () => {
