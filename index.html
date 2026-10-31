@@ -121,6 +121,7 @@ function blank() {
     recorrentes: [],
     parcelados: [],
     estornos: [],
+    creditos: [],
     eventuais: [],
     lancamentos: [],
     ferias: {},
@@ -200,10 +201,14 @@ const parcDe = e => S.parcelados.find(p => p.id === e.parcelaId);
 // Compra no cartão marcada como "Próxima fatura" (prox) entra na fatura do mês seguinte ao da compra.
 const mesFatLanc = l => (l.prox ? addM(mkOf(l.data), 1) : mkOf(l.data));
 const recNaFatura = (r, m) => ativo(r, r.prox ? addM(m, -1) : m);
+// Ajustes manuais na fatura (pagamento antecipado, reembolso, bônus): reduzem a fatura do cartão
+// naquele mês, sem alterar parcelas nem o executado por categoria.
+const creditosMes = (c, m) => (S.creditos || []).filter(x => x.cartao === c && x.mes === m);
 const fatCartao = (c, m) =>
   S.parcelados.filter(p => p.cartao === c && parcelaAtiva(p, m)).reduce((a, p) => a + valorParcela(p), 0) +
   S.recorrentes.filter(r => r.grupo === 'Cartão' && r.cartao === c && recNaFatura(r, m)).reduce((a, r) => a + r.valor, 0) -
-  somaAjustes(m, e => parcDe(e).cartao === c);
+  somaAjustes(m, e => parcDe(e).cartao === c) -
+  creditosMes(c, m).reduce((a, x) => a + x.valor, 0);
 const faturaTotal = m => S.config.cartoes.reduce((a, c) => a + fatCartao(c, m), 0);
 const execMes = m =>
   S.lancamentos.filter(l => mkOf(l.data) === m).reduce((a, l) => a + l.valor, 0) +
@@ -1176,6 +1181,9 @@ function linhasFatura(m) {
     S.lancamentos.filter(l => l.forma === 'Cartão' && l.cartao === c && mesFatLanc(l) === m).forEach(l => {
       itens.push({ tipo: 'Lançamento', descricao: l.descricao, parcela: '', categoria: l.categoria || 'Outros', valor: l.valor });
     });
+    creditosMes(c, m).forEach(x => {
+      itens.push({ tipo: 'Ajuste', descricao: x.descricao || 'Ajuste manual', parcela: '', categoria: '', valor: -x.valor });
+    });
     return { cartao: c, itens, total: itens.reduce((t, i) => t + i.valor, 0) };
   });
 }
@@ -1356,6 +1364,24 @@ V.parcelas = () => {
       <thead><tr><th>Mês da fatura</th><th>Tipo</th><th>Compra</th><th>Cartão</th><th class="num">Valor</th><th>Observação</th><th></th></tr></thead>
       <tbody>${ajustes}</tbody>
     </table></div></section>
+    <section class="card"><h2>Ajuste manual na fatura (pagamento, reembolso ou bônus)</h2>
+      <form class="fields" onsubmit="addCredito(event)">
+        <label>Cartão<select name="cartao">${opts(S.config.cartoes)}</select></label>
+        <label>Mês da fatura<input type="month" name="mes" value="${mkOf(hoje())}" required></label>
+        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
+        <label>Descrição<input type="text" name="descricao" placeholder="Ex.: pagamento antecipado"></label>
+        <button>Lançar ajuste</button>
+      </form>
+      <p class="muted" style="margin-top:10px">Funciona como um pagamento: diminui o valor da fatura do cartão naquele mês, sem mudar as parcelas das compras nem o executado por categoria. Para devolver o valor de uma compra específica, use o estorno acima.</p>
+      ${(S.creditos || []).length ? `<div class="scroll" style="margin-top:12px"><table>
+        <thead><tr><th>Mês da fatura</th><th>Cartão</th><th>Descrição</th><th class="num">Valor</th><th></th></tr></thead>
+        <tbody>${S.creditos.slice().sort((a, b) => a.mes.localeCompare(b.mes)).map(x => `<tr>
+          <td>${mNome(x.mes)}</td><td>${esc(x.cartao)}</td><td>${esc(x.descricao || 'Ajuste manual')}</td>
+          <td class="num pos">-${brl(x.valor)}</td>
+          <td class="num"><button class="danger small" onclick="excluir('creditos','${x.id}')">Excluir</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : ''}
+    </section>
     ${compras ? `<section class="card"><h2>Comparar dois cenários de estorno</h2>
       <form class="fields" onsubmit="compararEstorno(event)">
         <label>Compra parcelada<select name="parcelaId">${compras}</select></label>
@@ -1859,6 +1885,17 @@ function addAjuste(e) {
   commit();
 }
 
+function addCredito(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const valor = parseFloat(f.valor.value);
+  if (!f.cartao.value) return alert('Escolha o cartão.');
+  if (!f.mes.value) return alert('Informe o mês da fatura.');
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  S.creditos = [...(S.creditos || []), { id: uid(), cartao: f.cartao.value, mes: f.mes.value, valor, descricao: f.descricao.value.trim() }];
+  commit();
+}
+
 function addEv(e) {
   e.preventDefault();
   const f = e.target.elements;
@@ -1946,7 +1983,7 @@ function importarPlanilhaLegada(todas) {
           cartoes: cartoes.length ? cartoes : S.config.cartoes,
           categorias: categorias.length ? categorias : S.config.categorias
         },
-        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], eventuais, lancamentos, ferias
+        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], eventuais, lancamentos, ferias
       };
       commit();
       alert(`Planilha importada: ${recorrentes.length} recorrentes, ${parcelados.length} parcelamento(s), ${eventuais.length} evento(s) e ${lancamentos.length} lançamento(s).`);
@@ -2228,6 +2265,11 @@ function montarPlanilha() {
   });
   abas.push({ nome: 'Estornos', linhas: est });
 
+  // Ajustes manuais na fatura (pagamento, reembolso, bônus): valores positivos, subtraídos na aba Faturas
+  const aju = [['Mês da fatura', 'Cartão', 'Valor', 'Descrição']];
+  (S.creditos || []).forEach(x => aju.push([N(serialMes(x.mes), FMT_MES), x.cartao, N(x.valor, FMT_VALOR), x.descricao || null]));
+  abas.push({ nome: 'Ajustes_Fatura', linhas: aju });
+
   // Eventuais
   const ev = [['Mês', 'Descrição', 'Tipo', 'Valor']];
   S.eventuais.forEach(e => ev.push([N(serialMes(e.mes), FMT_MES), e.descricao, e.tipo, N(e.valor, FMT_VALOR)]));
@@ -2285,7 +2327,7 @@ function montarPlanilha() {
       const col = colL(j + 1), card = cartoes[j];
       const val = card ? fatCartao(card, m) : 0;
       total += val;
-      row.push(F(`IF(${col}$3="",0,SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$B$2:$B$300,${col}$3,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})+SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"Cartão",Recorrentes!$C$2:$C$300,${col}$3,Recorrentes!$J$2:$J$300,"<="&EOMONTH($A${r},0),Recorrentes!$K$2:$K$300,">="&$A${r})-SUMIFS(Estornos!$K$2:$K$500,Estornos!$B$2:$B$500,${col}$3,Estornos!$I$2:$I$500,"<="&$A${r},Estornos!$J$2:$J$500,">="&$A${r}))`, val, FMT_VALOR));
+      row.push(F(`IF(${col}$3="",0,SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$B$2:$B$300,${col}$3,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})+SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"Cartão",Recorrentes!$C$2:$C$300,${col}$3,Recorrentes!$J$2:$J$300,"<="&EOMONTH($A${r},0),Recorrentes!$K$2:$K$300,">="&$A${r})-SUMIFS(Estornos!$K$2:$K$500,Estornos!$B$2:$B$500,${col}$3,Estornos!$I$2:$I$500,"<="&$A${r},Estornos!$J$2:$J$500,">="&$A${r})-SUMIFS(Ajustes_Fatura!$C$2:$C$500,Ajustes_Fatura!$B$2:$B$500,${col}$3,Ajustes_Fatura!$A$2:$A$500,$A${r}))`, val, FMT_VALOR));
     }
     row.push(F(`SUM(B${r}:${colL(NCART)}${r})`, total, FMT_VALOR));
     fat.push(row);
@@ -2401,6 +2443,11 @@ function interpretarNova(g) {
     id: uid(), mes: mkOf(isoData(r[0])), descricao: String(r[1] || ''), tipo: String(r[2] || 'Despesa'), valor: Number(r[3]) || 0
   }));
 
+  // Ajustes manuais na fatura (aba opcional: planilhas antigas não têm).
+  const creditos = (g.Ajustes_Fatura || []).slice(1).filter(r => r[0] && r[1] && r[2]).map(r => ({
+    id: uid(), cartao: String(r[1]), mes: mkOf(isoData(r[0])), valor: Number(r[2]) || 0, descricao: r[3] ? String(r[3]) : ''
+  }));
+
   const lancamentos = g.Lancamentos.slice(1).filter(r => r[0] && r[3]).map(r => {
     const fc = formaECartao(r[4]);
     return {
@@ -2445,7 +2492,7 @@ function interpretarNova(g) {
       cartoes: cartoes.length ? cartoes : S.config.cartoes,
       categorias: categorias.length ? categorias : S.config.categorias
     },
-    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, eventuais, lancamentos, ferias, patrimonio
+    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, eventuais, lancamentos, ferias, patrimonio
   };
 }
 
@@ -2465,7 +2512,7 @@ function importarPlanilha(input) {
       if (!confirm('Importar a planilha substitui todos os dados atuais pelo conteúdo dela. Continuar?')) return;
       S = { ...S, ...nova };
       commit();
-      alert(`Planilha importada: ${S.recorrentes.length} recorrentes, ${S.parcelados.length} parcelamento(s), ${S.eventuais.length} evento(s), ${S.lancamentos.length} lançamento(s).`);
+      alert(`Planilha importada: ${S.recorrentes.length} recorrentes, ${S.parcelados.length} parcelamento(s), ${S.eventuais.length} evento(s), ${S.lancamentos.length} lançamento(s), ${(S.creditos || []).length} ajuste(s) de fatura.`);
     } catch (err) {
       alert('A planilha tem um formato inesperado. Use a planilha exportada pelo app.');
     }
