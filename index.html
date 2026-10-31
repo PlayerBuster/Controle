@@ -1,0 +1,1770 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controle Financeiro</title>
+<style>
+:root{--bg:#f5f6fa;--card:#fff;--ink:#1d2330;--muted:#6b7385;--line:#e3e6ee;--accent:#2f6fed;--good:#1f9d62;--bad:#d64545}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:15px}
+header{background:var(--ink);color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+header h1{font-size:18px;margin:0}
+.abas{display:flex;gap:6px;overflow-x:auto;padding:10px 20px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2}
+main{max-width:1100px;margin:0 auto;padding:20px;display:grid;gap:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.card h2{font-size:13px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.big{font-size:22px;font-weight:700;margin:4px 0}
+.pos{color:var(--good)}
+.neg{color:var(--bad)}
+button{font:inherit;border:0;border-radius:8px;padding:8px 14px;background:var(--accent);color:#fff;cursor:pointer;white-space:nowrap}
+button.ghost{background:transparent;color:#fff;border:1px solid #fff}
+button.tab{background:transparent;color:var(--ink);border:1px solid var(--line);padding:6px 12px}
+button.tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.danger{background:var(--bad)}
+button.small{padding:3px 9px;font-size:13px}
+input,select{font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;width:100%;background:#fff;color:var(--ink)}
+input[type=checkbox]{width:auto}
+label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+form.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}
+form.fields button{height:38px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:middle}
+th{color:var(--muted);font-weight:600;white-space:nowrap}
+td.num,th.num{text-align:right;white-space:nowrap}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;min-width:80px}
+.bar>div{height:100%;background:var(--good)}
+.bar>div.over{background:var(--bad)}
+.muted{color:var(--muted);font-size:13px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 10px;margin:0 6px 6px 0}
+p{margin:6px 0}
+[hidden]{display:none!important}
+.gauge{display:grid;justify-items:center;text-align:center;gap:4px;align-content:start}
+.legenda{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:0 0 6px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}
+details summary{list-style:none}
+details summary::-webkit-details-marker{display:none}
+.aviso{background:#fff4d6;border:1px solid #e0a100;border-radius:10px;padding:10px 14px;margin:12px 20px 0;display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}
+.aviso button{background:#e0a100}
+@media(max-width:600px){th,td{font-size:13px}main{padding:12px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Controle Financeiro</h1>
+  <div class="row">
+    <button class="ghost" onclick="$('fx').click()">Importar planilha .xlsx</button>
+    <button class="ghost" onclick="$('fj').click()">Importar backup .json</button>
+    <button class="ghost" onclick="exportar()">Exportar .json</button>
+    <button class="ghost" onclick="exportarPlanilha()">Exportar planilha .xlsx</button>
+    <button class="ghost" onclick="exemplo()">Carregar exemplo</button>
+    <button class="ghost" onclick="zerar()">Zerar tudo</button>
+  </div>
+</header>
+<div id="aviso"></div>
+<nav class="abas" id="abas"></nav>
+<main id="conteudo"></main>
+<input type="file" id="fx" accept=".xlsx,.xls" hidden>
+<input type="file" id="fj" accept=".json,application/json" hidden>
+
+<script>
+const KEY = 'controle-financeiro-v2';
+const KEY1 = 'controle-financeiro-v1';
+const CATS = ['Moradia','Alimentação','Transporte','Saúde','Lazer','Educação','Vestuário','Assinaturas','Outros'];
+const GRUPOS = ['Receita','Fixo','Cartão'];
+const FORMAS = ['Cartão','Pix','Débito','Dinheiro','Boleto','Outros'];
+const MESES = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, '0');
+const brl = v => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sum = arr => arr.reduce((s, x) => s + (Number(x.valor) || 0), 0);
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const hoje = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const mkOf = d => String(d || '').slice(0, 7);
+const mIdx = m => { const [y, mo] = m.split('-').map(Number); return y * 12 + mo - 1; };
+const addM = (m, n) => { const k = mIdx(m) + n; return `${Math.floor(k / 12)}-${pad(k % 12 + 1)}`; };
+const mNome = m => { const [y, mo] = m.split('-'); return `${MESES[Number(mo) - 1]}/${y}`; };
+const fmtData = s => (s ? s.split('-').reverse().join('/') : '—');
+const pct = v => (v * 100).toFixed(2).replace('.', ',') + '%';
+
+function isoData(v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number') return new Date(Math.round((v - 25569) * 864e5)).toISOString().slice(0, 10);
+  const s = String(v).trim();
+  let m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  m = s.match(/^\d{4}-\d{2}-\d{2}/);
+  return m ? m[0] : '';
+}
+
+/* ---------- modelo de dados ---------- */
+function blank() {
+  return {
+    config: { saldoConta: 0, primeiroMes: '2026-11', mesRef: mkOf(hoje()), cartoes: ['Nubank', 'Itaú'], categorias: [...CATS] },
+    orcamento: {},
+    orcamentoMeses: {},
+    recorrentes: [],
+    parcelados: [],
+    eventuais: [],
+    lancamentos: [],
+    ferias: {},
+    patrimonio: { valorInicial: 200, dataInicio: '2026-10-21', meta: 0, prazoAnos: 10, taxaAnual: 0.08, aporteMensal: 0, aportes: [] }
+  };
+}
+
+function deBackup(d) {
+  const b = blank();
+  const m = d.metas || {};
+  b.patrimonio = {
+    valorInicial: Number(m.valorInicial) || 0,
+    dataInicio: m.dataInicio || hoje(),
+    meta: Number(m.meta) || 0,
+    prazoAnos: Number(m.prazoAnos) || 0,
+    taxaAnual: Number(m.taxaAnual) || 0,
+    aporteMensal: Number(m.aporteMensal) || 0,
+    aportes: (d.aportes || []).map(a => ({ id: uid(), data: a.data || hoje(), valor: Number(a.valor) || 0, descricao: a.descricao || '' }))
+  };
+  b.lancamentos = (d.gastos || []).map(g => ({
+    id: uid(), data: g.data || hoje(), descricao: g.descricao || '', categoria: g.categoria || 'Outros', valor: Number(g.valor) || 0, forma: ''
+  }));
+  const cats = [...b.config.categorias];
+  (d.categorias || []).forEach(c => { if (c.nome && !cats.includes(c.nome)) cats.push(c.nome); });
+  b.config.categorias = cats;
+  return b;
+}
+
+function carregar() {
+  try {
+    const v2 = localStorage.getItem(KEY);
+    if (v2) return Object.assign(blank(), JSON.parse(v2));
+    const v1 = localStorage.getItem(KEY1);
+    if (v1) return deBackup(JSON.parse(v1));
+  } catch (e) {}
+  return blank();
+}
+
+let S = carregar();
+let aba = 'resumo';
+let filtroMes = '';
+
+function salvar() {
+  try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+}
+function commit() { S.modificadoEm = agoraISO(); salvar(); render(); agendarEnvio(); }
+
+/* ---------- cálculos (replicam as fórmulas da planilha) ---------- */
+const ativo = (it, m) =>
+  mIdx(mkOf(it.inicio)) <= mIdx(m) && mIdx(it.fim ? mkOf(it.fim) : '2099-12') >= mIdx(m);
+
+const valorParcela = p => (p.valorParcela != null ? p.valorParcela : Math.round(p.valorTotal / p.parcelas * 100) / 100);
+const ultimaParcela = p => addM(p.inicio, p.parcelas - 1);
+const parcelaAtiva = (p, m) => mIdx(p.inicio) <= mIdx(m) && mIdx(ultimaParcela(p)) >= mIdx(m);
+
+const sumRec = (grupo, m) => S.recorrentes.filter(r => r.grupo === grupo && ativo(r, m)).reduce((a, r) => a + r.valor, 0);
+const sumEv = (tipo, m) => S.eventuais.filter(e => e.tipo === tipo && e.mes === m).reduce((a, e) => a + e.valor, 0);
+const fatCartao = (c, m) =>
+  S.parcelados.filter(p => p.cartao === c && parcelaAtiva(p, m)).reduce((a, p) => a + valorParcela(p), 0) +
+  S.recorrentes.filter(r => r.grupo === 'Cartão' && r.cartao === c && ativo(r, m)).reduce((a, r) => a + r.valor, 0);
+const faturaTotal = m => S.config.cartoes.reduce((a, c) => a + fatCartao(c, m), 0);
+const execMes = m =>
+  S.lancamentos.filter(l => mkOf(l.data) === m).reduce((a, l) => a + l.valor, 0) +
+  S.parcelados.filter(p => parcelaAtiva(p, m)).reduce((a, p) => a + valorParcela(p), 0);
+const execCat = (c, m) =>
+  S.lancamentos.filter(l => l.categoria === c && mkOf(l.data) === m).reduce((a, l) => a + l.valor, 0) +
+  S.parcelados.filter(p => (p.categoria || 'Outros') === c && parcelaAtiva(p, m)).reduce((a, p) => a + valorParcela(p), 0);
+// Orçamento de um mês: o próprio, se existir; senão, o padrão (S.orcamento).
+const orcEfetivo = m => S.orcamentoMeses[m] || S.orcamento;
+const totalOrc = (m = S.config.mesRef) => {
+  const o = orcEfetivo(m);
+  return S.config.categorias.reduce((a, c) => a + (Number(o[c]) || 0), 0);
+};
+
+function mesBase(m) {
+  const rf = sumRec('Receita', m), re = sumEv('Receita', m), ef = sumRec('Fixo', m);
+  const fat = faturaTotal(m), ed = sumEv('Despesa', m), ov = totalOrc(m);
+  return { rf, re, rt: rf + re, ef, fat, ed, ov, I: ef + fat + ed + ov };
+}
+
+function projecao(n) {
+  const base = S.config.primeiroMes;
+  const rows = [];
+  for (let i = 0; i <= n; i++) {
+    const m = addM(base, i);
+    rows.push({ m, ...mesBase(m), ferias: !!S.ferias[m] });
+  }
+  let acum = S.config.saldoConta;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const r = rows[i];
+    const adj = (r.ferias ? rows[i + 1].I : 0) - (i > 0 && rows[i - 1].ferias ? r.I : 0);
+    r.adj = adj;
+    r.L = r.I + adj;
+    r.saldo = r.rt - r.L;
+    acum += r.saldo;
+    r.acum = acum;
+    r.exec = execMes(r.m);
+    r.futuro = mIdx(r.m) > mIdx(mkOf(hoje()));
+    r.dif = r.futuro ? 0 : r.L - r.exec; // meses futuros ainda não têm execução
+    out.push(r);
+  }
+  return out;
+}
+
+function projPatr() {
+  const p = S.patrimonio;
+  const P = p.valorInicial + sum(p.aportes);
+  const i = Math.pow(1 + p.taxaAnual, 1 / 12) - 1;
+  const n = Math.round(p.prazoAnos * 12);
+  const A = p.aporteMensal;
+  const fv = i === 0 ? P + A * n : P * Math.pow(1 + i, n) + A * (Math.pow(1 + i, n) - 1) / i;
+  let mes = null;
+  if (p.meta > 0) {
+    if (P >= p.meta) mes = 0;
+    else {
+      let b = P;
+      for (let k = 1; k <= 1200; k++) { b = b * (1 + i) + A; if (b >= p.meta) { mes = k; break; } }
+    }
+  }
+  return { P, fv, i, mes };
+}
+
+/* ---------- ações ---------- */
+function ir(k) { aba = k; render(); }
+
+function card(titulo, valor, sub, cls = '') {
+  return `<div class="card"><h2>${titulo}</h2><div class="big ${cls}">${valor}</div><div class="muted">${sub}</div></div>`;
+}
+const opts = (arr, sel) => arr.map(x => `<option ${x === sel ? 'selected' : ''}>${esc(x)}</option>`).join('');
+
+/* ---------- visões ---------- */
+const V = {};
+
+/* ---------- pontuação ---------- */
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const pctTxt = v => (v * 100).toFixed(1).replace('.', ',') + '%';
+const soma = (g, k) => g.reduce((a, r) => a + r[k], 0);
+const abrevMoeda = v => (v < 0 ? '−' : '') + 'R$ ' +
+  (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1).replace('.', ',') + 'k' : Math.round(Math.abs(v)));
+
+// Saúde financeira sobre os 36 meses da projeção.
+function scoreSaude() {
+  const proj = projecao(36);
+  const rt = soma(proj, 'rt');
+  const saldo = soma(proj, 'saldo');
+  const L = soma(proj, 'L');
+  const fixasFat = proj.reduce((a, r) => a + r.ef + r.fat, 0);
+  const taxa = rt > 0 ? saldo / rt : 0;
+  const comprom = rt > 0 ? fixasFat / rt : 1;
+  const positivos = proj.filter(r => r.acum >= 0).length / proj.length;
+  const mediaDesp = L / proj.length;
+  const reserva = mediaDesp > 0 ? proj[11].acum / mediaDesp : 0;
+  const partes = [
+    { nome: 'Poupança', peso: 40, valor: clamp01(taxa / 0.40),
+      desc: `Sobra média de ${pctTxt(taxa)} da receita (100 pontos a partir de 40%)` },
+    { nome: 'Saldo positivo', peso: 25, valor: positivos,
+      desc: `${Math.round(positivos * 100)}% dos meses com saldo acumulado positivo` },
+    { nome: 'Comprometimento', peso: 20, valor: clamp01((0.9 - comprom) / 0.4),
+      desc: `Fixos e faturas consomem ${pctTxt(comprom)} da receita (ideal: até 50%)` },
+    { nome: 'Reserva', peso: 15, valor: clamp01(reserva / 6),
+      desc: `Saldo cobre ${reserva.toFixed(1).replace('.', ',')} meses de despesa em 12 meses (meta: 6)` }
+  ];
+  const score = Math.round(partes.reduce((a, p) => a + p.valor * p.peso, 0));
+  return { score, partes };
+}
+
+// Aderência ao orçado no mês: categorias com orçamento > 0.
+// Dentro do orçado = 100; cada 1% acima do orçado tira 2 pontos.
+function scoreOrcamento(m) {
+  const orc = orcEfetivo(m);
+  const cats = S.config.categorias.filter(c => (Number(orc[c]) || 0) > 0);
+  const execTotal = execMes(m);
+  if (!cats.length) return { score: null, itens: [], semOrc: execTotal };
+  const itens = cats.map(c => {
+    const b = Number(orc[c]);
+    const e = execCat(c, m);
+    const s = e <= b ? 1 : clamp01(1 - 2 * (e / b - 1));
+    return { c, b, e, s };
+  });
+  const score = Math.round(itens.reduce((a, i) => a + i.s, 0) / itens.length * 100);
+  const semOrc = execTotal - soma(itens.map(i => ({ e: i.e })), 'e');
+  return { score, itens, semOrc };
+}
+
+function gauge(score, titulo, sub) {
+  const r = 52, c = 2 * Math.PI * r;
+  const ok = score != null;
+  const cor = !ok ? '#e3e6ee' : score >= 80 ? '#1f9d62' : score >= 60 ? '#2f6fed' : score >= 40 ? '#e0a100' : '#d64545';
+  const faixa = !ok ? 'Sem dados' : score >= 80 ? 'Ótima' : score >= 60 ? 'Boa' : score >= 40 ? 'Atenção' : 'Crítica';
+  const off = ok ? c * (1 - score / 100) : c;
+  return `<div class="card gauge">
+    <h2>${titulo}</h2>
+    <svg viewBox="0 0 140 140" width="150" height="150">
+      <circle cx="70" cy="70" r="${r}" fill="none" style="stroke:var(--line)" stroke-width="12"/>
+      <circle cx="70" cy="70" r="${r}" fill="none" stroke="${cor}" stroke-width="12" stroke-linecap="round"
+        stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 70 70)"/>
+      <text x="70" y="80" text-anchor="middle" font-size="30" font-weight="700" style="fill:var(--ink)">${ok ? score : '—'}</text>
+    </svg>
+    <div><b style="color:${ok ? cor : 'var(--muted)'}">${faixa}</b></div>
+    <div class="muted">${sub}</div>
+  </div>`;
+}
+
+function blocoScores(m = S.config.mesRef) {
+  const sa = scoreSaude();
+  const so = scoreOrcamento(m);
+  const detalhe = sa.partes.map(p => `<div style="margin:10px 0">
+      <div class="row" style="justify-content:space-between"><span>${p.nome} <span class="muted">(peso ${p.peso}%)</span></span><b>${Math.round(p.valor * 100)}/100</b></div>
+      <div class="bar" style="height:10px"><div style="width:${(p.valor * 100).toFixed(1)}%"></div></div>
+      <div class="muted">${p.desc}</div>
+    </div>`).join('');
+  return `<section class="grid">
+    ${gauge(sa.score, 'Saúde financeira · 36 meses', 'Poupança, saldo, comprometimento e reserva')}
+    ${gauge(so.score, `Aderência ao orçado · ${mNome(m)}`, so.score == null ? 'Defina o orçamento do mês para pontuar' : `Gasto sem orçamento: ${brl(so.semOrc)}`)}
+    <section class="card" style="grid-column:1/-1"><h2>Como a saúde financeira é calculada</h2>${detalhe}</section>
+  </section>`;
+}
+
+/* ---------- visão simplificada da projeção ---------- */
+let periodoProj = 1;
+let detalheAberto = false; // mantém a análise detalhada aberta entre redesenhos
+const PERIODOS = { 1: 'Mensal', 3: 'Trimestral', 6: 'Semestral' };
+function setPeriodo(n) { periodoProj = n; render(); }
+
+function agruparPeriodos(rows, n) {
+  const grupos = [];
+  for (let i = 0; i < rows.length; i += n) {
+    const g = rows.slice(i, i + n);
+    const ini = g[0].m, fim = g[g.length - 1].m;
+    grupos.push({
+      curto: mNome(ini),
+      rotulo: n === 1 ? mNome(ini) : `${mNome(ini)} – ${mNome(fim)}`,
+      rt: soma(g, 'rt'), L: soma(g, 'L'), saldo: soma(g, 'saldo'),
+      acum: g[g.length - 1].acum, exec: soma(g, 'exec'), dif: soma(g, 'dif'),
+      futuro: g.every(r => r.futuro)
+    });
+  }
+  return grupos;
+}
+
+function graficoProj(grupos) {
+  const W = 760, H = 300, P = { l: 78, r: 16, t: 14, b: 44 };
+  const valores = [0, ...grupos.flatMap(g => [g.rt, g.L, g.acum])];
+  const yMin = Math.min(...valores), yMax = Math.max(yMin + 1, ...valores);
+  const y = v => P.t + (1 - (v - yMin) / (yMax - yMin)) * (H - P.t - P.b);
+  const y0 = y(0);
+  const gw = (W - P.l - P.r) / grupos.length;
+  const bw = Math.max(3, Math.min(20, gw * 0.36));
+  const passo = Math.ceil(grupos.length / 12);
+  const barra = (x, v, cor) => {
+    const yv = y(v);
+    return `<rect x="${x.toFixed(1)}" y="${Math.min(yv, y0).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, Math.abs(yv - y0)).toFixed(1)}" style="fill:${cor}"/>`;
+  };
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Receitas, despesas e saldo acumulado por período">`;
+  for (let k = 0; k <= 4; k++) {
+    const v = yMin + (yMax - yMin) * k / 4, yy = y(v).toFixed(1);
+    svg += `<line x1="${P.l}" x2="${W - P.r}" y1="${yy}" y2="${yy}" style="stroke:var(--line)"/>`;
+    svg += `<text x="${P.l - 8}" y="${yy}" dy="4" text-anchor="end" font-size="11" style="fill:var(--muted)">${abrevMoeda(v)}</text>`;
+  }
+  grupos.forEach((g, i) => {
+    const cx = P.l + i * gw + gw / 2;
+    svg += barra(cx - bw - 1, g.rt, 'var(--good)');
+    svg += barra(cx + 1, g.L, 'var(--bad)');
+    if (i % passo === 0) svg += `<text x="${cx.toFixed(1)}" y="${H - P.b + 16}" text-anchor="middle" font-size="10" style="fill:var(--muted)">${esc(g.curto)}</text>`;
+  });
+  const pts = grupos.map((g, i) => `${(P.l + i * gw + gw / 2).toFixed(1)},${y(g.acum).toFixed(1)}`);
+  svg += `<polyline fill="none" stroke-width="2.5" style="stroke:var(--accent)" points="${pts.join(' ')}"/>`;
+  grupos.forEach((g, i) => {
+    svg += `<circle cx="${(P.l + i * gw + gw / 2).toFixed(1)}" cy="${y(g.acum).toFixed(1)}" r="2.5" style="fill:var(--accent)"/>`;
+  });
+  return svg + '</svg>';
+}
+
+V.projecao = () => {
+  const rows = projecao(36);
+  const grupos = agruparPeriodos(rows, periodoProj);
+  const botoes = Object.entries(PERIODOS).map(([n, t]) =>
+    `<button class="tab ${Number(n) === periodoProj ? 'on' : ''}" onclick="setPeriodo(${n})">${t}</button>`).join('');
+  const linhas = grupos.map(g => `<tr>
+      <td>${g.rotulo}</td>
+      <td class="num pos">${brl(g.rt)}</td><td class="num neg">${brl(g.L)}</td>
+      <td class="num ${g.saldo < 0 ? 'neg' : 'pos'}">${brl(g.saldo)}</td>
+      <td class="num ${g.acum < 0 ? 'neg' : 'pos'}">${brl(g.acum)}</td>
+      <td class="num">${g.futuro ? '—' : brl(g.exec)}</td><td class="num ${g.dif < 0 ? 'neg' : ''}">${g.futuro ? '—' : brl(g.dif)}</td>
+    </tr>`).join('');
+  return `
+    <section class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:10px">
+        <h2 style="margin:0">Visão simplificada · ${PERIODOS[periodoProj]}</h2>
+        <div class="row">${botoes}</div>
+      </div>
+      <div class="legenda">
+        <span><i class="sw" style="background:var(--good)"></i>Receitas</span>
+        <span><i class="sw" style="background:var(--bad)"></i>Despesas</span>
+        <span><i class="sw" style="background:var(--accent)"></i>Saldo acumulado</span>
+      </div>
+      ${graficoProj(grupos)}
+    </section>
+    <section class="card"><h2>Comparativo por período</h2><div class="scroll"><table>
+      <thead><tr><th>Período</th><th class="num">Receitas</th><th class="num">Despesas</th><th class="num">Saldo</th>
+        <th class="num">Saldo acumulado</th><th class="num">Executado</th><th class="num">Previsto − executado</th></tr></thead>
+      <tbody>${linhas}</tbody>
+    </table></div></section>
+    <details class="card" ontoggle="detalheAberto = this.open" ${detalheAberto ? 'open' : ''}>
+      <summary style="cursor:pointer;font-weight:600">Análise detalhada mês a mês (36 meses) ▾</summary>
+      <div style="margin-top:12px">${tabelaDetalhada(rows)}</div>
+    </details>`;
+};
+
+/* ---------- mês corrente ---------- */
+V.mesatual = () => {
+  const m = mkOf(hoje());
+  const dia = Number(hoje().slice(8, 10));
+  const diasMes = new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0).getDate();
+  const b = mesBase(m);
+  const exec = execMes(m);
+  const orc = orcEfetivo(m);
+  const sc = scoreOrcamento(m);
+  const itens = [
+    ...S.lancamentos.filter(l => mkOf(l.data) === m).map(l => ({
+      d: l.data, desc: l.descricao, cat: l.categoria, v: l.valor, obs: l.forma || '—'
+    })),
+    ...S.parcelados.filter(p => parcelaAtiva(p, m)).map(p => ({
+      d: p.dataCompra, desc: p.descricao, cat: p.categoria || 'Outros', v: valorParcela(p),
+      obs: `Parcela ${mIdx(m) - mIdx(p.inicio) + 1}/${p.parcelas} · ${p.cartao}`
+    }))
+  ].sort((a, b) => (b.d || '').localeCompare(a.d || ''));
+  const barras = S.config.categorias
+    .filter(c => (Number(orc[c]) || 0) > 0 || execCat(c, m) > 0)
+    .map(c => {
+      const bud = Number(orc[c]) || 0, e = execCat(c, m);
+      const p = bud > 0 ? Math.min(e / bud * 100, 100) : 100;
+      return `<div style="margin:10px 0">
+        <div class="row" style="justify-content:space-between"><span>${esc(c)}</span><span class="muted">${brl(e)} de ${brl(bud)}</span></div>
+        <div class="bar" style="height:12px"><div class="${bud > 0 && e > bud ? 'over' : ''}" style="width:${p.toFixed(1)}%"></div></div>
+      </div>`;
+    }).join('') || '<p class="muted">Sem orçamento nem gastos neste mês.</p>';
+  const linhas = itens.map(i => `<tr>
+      <td>${fmtData(i.d)}</td><td>${esc(i.desc)}</td><td>${esc(i.cat)}</td><td>${esc(i.obs)}</td>
+      <td class="num neg">${brl(i.v)}</td></tr>`).join('')
+    || `<tr><td colspan="5" class="muted">Nenhum lançamento neste mês.</td></tr>`;
+  const emAndamento = dia < diasMes ? ' · mês em andamento (pontuação parcial)' : '';
+  const sub = sc.score == null ? 'Defina o orçamento do mês para pontuar' : `Gasto sem orçamento: ${brl(sc.semOrc)}${emAndamento}`;
+  return `
+    <section class="grid">
+      ${card('Dia do mês', `${dia} de ${diasMes}`, `${Math.round(dia / diasMes * 100)}% do mês decorrido`)}
+      ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
+      ${card('Despesas previstas', brl(b.I), `Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · eventuais ${brl(b.ed)} · orçamento ${brl(b.ov)}`, 'neg')}
+      ${card('Executado até agora', brl(exec), `${Math.round(exec / Math.max(b.I, 1) * 100)}% das despesas previstas`)}
+      ${card('Saldo realizado', brl(b.rt - exec), 'Receita prevista menos executado', b.rt - exec < 0 ? 'neg' : 'pos')}
+    </section>
+    <section class="grid">
+      ${gauge(sc.score, `Aderência ao orçado · ${mNome(m)}`, sub)}
+      <section class="card"><h2>Orçado x executado por categoria</h2>${barras}</section>
+    </section>
+    <section class="card"><h2>Lançamentos do mês</h2><div class="scroll"><table>
+      <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Forma / parcela</th><th class="num">Valor</th></tr></thead>
+      <tbody>${linhas}</tbody>
+    </table></div></section>`;
+};
+
+V.resumo = () => {
+  const m = S.config.mesRef;
+  const b = mesBase(m);
+  const exec = execMes(m);
+  const proj = projecao(36);
+  const cards = S.config.cartoes.map(c => `<tr><td>${esc(c)}</td><td class="num">${brl(fatCartao(c, m))}</td></tr>`).join('')
+    || `<tr><td colspan="2" class="muted">Nenhum cartão cadastrado.</td></tr>`;
+  const orc = orcEfetivo(m);
+  const estouros = S.config.categorias.filter(c => (Number(orc[c]) || 0) > 0 && execCat(c, m) > orc[c]);
+  return `
+    ${blocoScores(m)}
+    <section class="grid">
+      ${card('Mês de referência', mNome(m), 'Altere em Configurações')}
+      ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
+      ${card('Despesas previstas', brl(b.I), `Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · eventuais ${brl(b.ed)} · orçamento ${brl(b.ov)}`, 'neg')}
+      ${card('Executado no mês', brl(exec), `Diferença para o previsto: ${brl(b.I - exec)}`)}
+      ${card('Saldo projetado em 12 meses', brl(proj[11].acum), `Saldo da conta hoje: ${brl(S.config.saldoConta)}`, proj[11].acum < 0 ? 'neg' : 'pos')}
+      ${card('Saldo projetado em 36 meses', brl(proj[35].acum), `Saldo acumulado ao fim do período`, proj[35].acum < 0 ? 'neg' : 'pos')}
+    </section>
+    <section class="card"><h2>Faturas previstas do mês por cartão</h2>
+      <div class="scroll"><table><thead><tr><th>Cartão</th><th class="num">Fatura</th></tr></thead><tbody>${cards}</tbody></table></div>
+    </section>
+    <section class="card"><h2>Alertas</h2>
+      ${estouros.length
+        ? `<p class="neg">Acima do orçamento no mês: ${estouros.map(esc).join(', ')}</p>`
+        : `<p class="pos">Nenhuma categoria acima do orçamento.</p>`}
+    </section>`;
+};
+
+function tabelaDetalhada(rows) {
+  const linhas = rows.map(r => `<tr>
+      <td>${mNome(r.m)}</td>
+      <td class="num">${brl(r.rf)}</td><td class="num">${brl(r.re)}</td><td class="num">${brl(r.rt)}</td>
+      <td class="num">${brl(r.ef)}</td><td class="num">${brl(r.fat)}</td><td class="num">${brl(r.ed)}</td>
+      <td class="num">${brl(r.ov)}</td><td class="num">${brl(r.I)}</td>
+      <td style="text-align:center"><input type="checkbox" ${r.ferias ? 'checked' : ''} onchange="marcarFerias('${r.m}', this.checked)"></td>
+      <td class="num">${brl(r.adj)}</td><td class="num">${brl(r.L)}</td>
+      <td class="num ${r.saldo < 0 ? 'neg' : 'pos'}">${brl(r.saldo)}</td>
+      <td class="num ${r.acum < 0 ? 'neg' : 'pos'}">${brl(r.acum)}</td>
+      <td class="num">${r.futuro ? '—' : brl(r.exec)}</td><td class="num">${r.futuro ? '—' : brl(r.dif)}</td>
+    </tr>`).join('');
+  return `
+    <section class="card">
+      <h2>Projeção mês a mês (36 meses)</h2>
+      <p class="muted">Marque "Férias" no mês em que o orçamento paga também o mês seguinte. O mês seguinte fica zerado e a despesa cai no mês marcado.</p>
+      <div class="scroll"><table>
+        <thead><tr>
+          <th>Mês</th><th class="num">Receitas fixas</th><th class="num">Receitas eventuais</th><th class="num">Total receitas</th>
+          <th class="num">Despesas fixas</th><th class="num">Faturas</th><th class="num">Despesas eventuais</th>
+          <th class="num">Orçamento variável</th><th class="num">Base do mês</th><th>Férias</th>
+          <th class="num">Ajuste férias</th><th class="num">Despesas totais</th><th class="num">Saldo do mês</th>
+          <th class="num">Saldo acumulado</th><th class="num">Executado</th><th class="num">Previsto − executado</th>
+        </tr></thead>
+        <tbody>${linhas}</tbody>
+      </table></div>
+    </section>`;
+};
+
+V.orcamento = () => {
+  const m = S.config.mesRef;
+  const orc = orcEfetivo(m);
+  const proprio = !!S.orcamentoMeses[m];
+  const linhas = S.config.categorias.map(c => {
+    const b = Number(orc[c]) || 0;
+    const e = execCat(c, m);
+    const p = b > 0 ? Math.min(e / b * 100, 100) : 0;
+    const over = b > 0 && e > b;
+    return `<tr>
+      <td>${esc(c)}</td>
+      <td class="num"><input type="number" step="0.01" min="0" value="${b}" style="width:130px;text-align:right" onchange="setOrc('${esc(c)}', this.value)"></td>
+      <td class="num">${brl(e)}</td>
+      <td class="num ${over ? 'neg' : ''}">${brl(b - e)}</td>
+      <td><div class="bar"><div class="${over ? 'over' : ''}" style="width:${p}%"></div></div></td>
+    </tr>`;
+  }).join('');
+  const execTot = S.config.categorias.reduce((a, c) => a + execCat(c, m), 0);
+  return `
+    <section class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Orçamento variável por categoria · ${mNome(m)}</h2>
+        <label style="min-width:180px">Mês de referência<input type="month" value="${m}" onchange="setCfg('mesRef', this.value)"></label>
+      </div>
+      <p class="muted">${proprio
+        ? `${mNome(m)} tem orçamento próprio.`
+        : `${mNome(m)} usa o padrão. Qualquer alteração aqui cria o orçamento próprio deste mês.`}</p>
+      <form class="fields" style="margin:12px 0 16px" onsubmit="copiarOrc(event)">
+        <label>Copiar ${mNome(m)} para o período: de<input type="month" name="de" value="${addM(m, 1)}" required></label>
+        <label>até<input type="month" name="ate" value="${addM(m, 1)}" required></label>
+        <button>Copiar orçamento</button>
+      </form>
+      <div class="scroll"><table>
+        <thead><tr><th>Categoria</th><th class="num">Orçamento mensal</th><th class="num">Executado</th><th class="num">Diferença</th><th>Uso</th></tr></thead>
+        <tbody>${linhas}</tbody>
+        <tfoot><tr><th>Total</th><th class="num">${brl(totalOrc(m))}</th><th class="num">${brl(execTot)}</th><th class="num">${brl(totalOrc(m) - execTot)}</th><th></th></tr></tfoot>
+      </table></div>
+    </section>`;
+};
+
+V.lancamentos = () => {
+  const itens = [
+    ...S.lancamentos.map(l => ({
+      id: l.id, tipo: 'lanc', data: l.data, descricao: l.descricao, categoria: l.categoria,
+      forma: l.forma || '—', valor: l.valor, obs: ''
+    })),
+    ...S.parcelados.map(p => ({
+      id: p.id, tipo: 'parc', data: p.dataCompra, descricao: p.descricao, categoria: p.categoria || 'Outros',
+      forma: `Cartão ${p.cartao}`, valor: p.valorTotal, obs: `${p.parcelas}x de ${brl(valorParcela(p))}`
+    }))
+  ];
+  const lista = itens
+    .filter(i => !filtroMes || mkOf(i.data) === filtroMes)
+    .sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  const total = sum(lista);
+  const linhas = lista.map(i => `<tr>
+      <td>${fmtData(i.data)}</td>
+      <td>${esc(i.descricao)}${i.obs ? ` <span class="muted">(${esc(i.obs)})</span>` : ''}</td>
+      <td>${esc(i.categoria)}</td><td>${esc(i.forma)}</td>
+      <td class="num neg">${brl(i.valor)}</td>
+      <td class="num"><button class="danger small" onclick="excluir('${i.tipo === 'parc' ? 'parcelados' : 'lancamentos'}','${i.id}')">Excluir</button></td>
+    </tr>`).join('') || `<tr><td colspan="6" class="muted">Nenhum lançamento.</td></tr>`;
+  return `
+    <section class="card"><h2>Novo lançamento (gasto executado)</h2>
+      <form class="fields" id="formLanc" onsubmit="addLanc(event)">
+        <label>Data<input type="date" name="data" value="${hoje()}" required></label>
+        <label>Descrição<input type="text" name="descricao" required></label>
+        <label>Categoria<select name="categoria">${opts(S.config.categorias)}</select></label>
+        <label>Forma<select name="forma">${opts(FORMAS)}</select></label>
+        <label id="lbl-valor">Valor (R$)<input type="number" step="0.01" min="0.01" name="valor"></label>
+        <label style="grid-auto-flow:column;align-items:center;justify-content:start;gap:8px;padding-bottom:10px">
+          <input type="checkbox" name="parcelada" onchange="togglePar(this.checked)"> Compra parcelada
+        </label>
+        <div id="campos-parc" hidden style="display:contents">
+          <label>Cartão<select name="cartaoParc">${opts(S.config.cartoes)}</select></label>
+          <label>Nº de parcelas<input type="number" step="1" min="1" name="nParcelas" value="2"></label>
+          <label>Valor da parcela (R$)<input type="number" step="0.01" min="0.01" name="valorParcela"></label>
+          <label>1ª parcela<input type="month" name="primeira" value="${addM(mkOf(hoje()), 1)}"></label>
+        </div>
+        <button>Adicionar</button>
+      </form>
+      <p class="muted" style="margin-top:10px">Compra parcelada entra na fatura do cartão e no executado de cada mês das parcelas, na categoria escolhida.</p>
+    </section>
+    <section class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Lançamentos · total ${brl(total)}</h2>
+        <label style="min-width:180px">Filtrar por mês<input type="month" value="${filtroMes}" onchange="filtroMes=this.value;render()"></label>
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Forma</th><th class="num">Valor</th><th></th></tr></thead>
+        <tbody>${linhas}</tbody>
+      </table></div>
+    </section>`;
+};
+
+V.recorrentes = () => {
+  const linhas = S.recorrentes.map(r => `<tr>
+      <td>${esc(r.descricao)}</td><td>${esc(r.grupo)}</td><td>${esc(r.cartao || '—')}</td><td>${esc(r.categoria)}</td>
+      <td class="num">${brl(r.valor)}</td><td>${fmtData(r.inicio)}</td><td>${r.fim ? fmtData(r.fim) : 'sem fim'}</td>
+      <td class="num"><button class="danger small" onclick="excluir('recorrentes','${r.id}')">Excluir</button></td>
+    </tr>`).join('') || `<tr><td colspan="8" class="muted">Nenhum item recorrente.</td></tr>`;
+  return `
+    <section class="card"><h2>Novo item recorrente</h2>
+      <form class="fields" onsubmit="addRec(event)">
+        <label>Descrição<input type="text" name="descricao" required></label>
+        <label>Grupo<select name="grupo">${opts(GRUPOS)}</select></label>
+        <label>Cartão (se Cartão)<select name="cartao"><option value=""></option>${opts(S.config.cartoes)}</select></label>
+        <label>Categoria<select name="categoria">${opts(S.config.categorias)}</select></label>
+        <label>Valor mensal (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
+        <label>Início<input type="date" name="inicio" value="${hoje()}" required></label>
+        <label>Fim (opcional)<input type="date" name="fim"></label>
+        <button>Adicionar</button>
+      </form>
+    </section>
+    <section class="card"><div class="scroll"><table>
+      <thead><tr><th>Descrição</th><th>Grupo</th><th>Cartão</th><th>Categoria</th><th class="num">Valor</th><th>Início</th><th>Fim</th><th></th></tr></thead>
+      <tbody>${linhas}</tbody>
+    </table></div></section>`;
+};
+
+V.parcelas = () => {
+  const linhas = S.parcelados.map(p => `<tr>
+      <td>${fmtData(p.dataCompra)}</td><td>${esc(p.cartao)}</td><td>${esc(p.descricao)}</td>
+      <td class="num">${brl(p.valorTotal)}</td><td class="num">${p.parcelas}x</td><td class="num">${brl(valorParcela(p))}</td>
+      <td>${mNome(p.inicio)}</td><td>${mNome(ultimaParcela(p))}</td>
+      <td class="num"><button class="danger small" onclick="excluir('parcelados','${p.id}')">Excluir</button></td>
+    </tr>`).join('') || `<tr><td colspan="9" class="muted">Nenhum parcelamento.</td></tr>`;
+  return `
+    <section class="card"><h2>Nova compra parcelada</h2>
+      <form class="fields" onsubmit="addParc(event)">
+        <label>Data da compra<input type="date" name="dataCompra" value="${hoje()}" required></label>
+        <label>Cartão<select name="cartao">${opts(S.config.cartoes)}</select></label>
+        <label>Descrição<input type="text" name="descricao" required></label>
+        <label>Categoria<select name="categoria">${opts(S.config.categorias)}</select></label>
+        <label>Valor total (R$)<input type="number" step="0.01" min="0.01" name="valorTotal" required></label>
+        <label>Nº de parcelas<input type="number" step="1" min="1" name="parcelas" value="1" required></label>
+        <label>1ª parcela<input type="month" name="inicio" value="${addM(mkOf(hoje()), 1)}" required></label>
+        <button>Adicionar</button>
+      </form>
+    </section>
+    <section class="card"><div class="scroll"><table>
+      <thead><tr><th>Compra</th><th>Cartão</th><th>Descrição</th><th class="num">Total</th><th class="num">Parcelas</th><th class="num">Valor parcela</th><th>1ª</th><th>Última</th><th></th></tr></thead>
+      <tbody>${linhas}</tbody>
+    </table></div></section>`;
+};
+
+V.eventuais = () => {
+  const lista = [...S.eventuais].sort((a, b) => a.mes.localeCompare(b.mes));
+  const linhas = lista.map(e => `<tr>
+      <td>${mNome(e.mes)}</td><td>${esc(e.tipo)}</td><td>${esc(e.descricao)}</td>
+      <td class="num ${e.tipo === 'Receita' ? 'pos' : 'neg'}">${brl(e.valor)}</td>
+      <td class="num"><button class="danger small" onclick="excluir('eventuais','${e.id}')">Excluir</button></td>
+    </tr>`).join('') || `<tr><td colspan="5" class="muted">Nenhum evento.</td></tr>`;
+  return `
+    <section class="card"><h2>Novo evento pontual</h2>
+      <form class="fields" onsubmit="addEv(event)">
+        <label>Mês<input type="month" name="mes" value="${mkOf(hoje())}" required></label>
+        <label>Descrição<input type="text" name="descricao" required></label>
+        <label>Tipo<select name="tipo">${opts(['Receita', 'Despesa'])}</select></label>
+        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
+        <button>Adicionar</button>
+      </form>
+    </section>
+    <section class="card"><div class="scroll"><table>
+      <thead><tr><th>Mês</th><th>Tipo</th><th>Descrição</th><th class="num">Valor</th><th></th></tr></thead>
+      <tbody>${linhas}</tbody>
+    </table></div></section>`;
+};
+
+V.patrimonio = () => {
+  const p = S.patrimonio;
+  const r = projPatr();
+  const linhas = [...p.aportes].sort((a, b) => (b.data || '').localeCompare(a.data || '')).map(a => `<tr>
+      <td>${fmtData(a.data)}</td><td>${esc(a.descricao)}</td><td class="num pos">${brl(a.valor)}</td>
+      <td class="num"><button class="danger small" onclick="excluirAporte('${a.id}')">Excluir</button></td>
+    </tr>`).join('') || `<tr><td colspan="4" class="muted">Nenhum aporte registrado.</td></tr>`;
+  const metaTxt = p.meta <= 0 ? '<span class="muted">Nenhuma meta definida.</span>'
+    : r.mes === null ? `Meta de ${brl(p.meta)}: <span class="neg">não atingida em até 100 anos com o aporte atual.</span>`
+    : r.mes === 0 ? `Meta de ${brl(p.meta)}: <span class="pos">já atingida.</span>`
+    : `Meta de ${brl(p.meta)}: atingida em cerca de <b>${r.mes} meses</b> (≈ ${(r.mes / 12).toFixed(1).replace('.', ',')} anos).`;
+  return `
+    <section class="grid">
+      ${card('Patrimônio atual', brl(r.P), `Inicial ${brl(p.valorInicial)} + aportes ${brl(sum(p.aportes))}`)}
+      ${card(`Projeção em ${p.prazoAnos} anos`, brl(r.fv), `Taxa ${pct(p.taxaAnual)} ao ano · aporte mensal previsto ${brl(p.aporteMensal)}`, 'pos')}
+    </section>
+    <section class="card"><p class="muted">Juros compostos mensais equivalentes a ${(r.i * 100).toFixed(4).replace('.', ',')}% ao mês. Estimativa, não garantia de rendimento.</p><p>${metaTxt}</p></section>
+    <section class="card"><h2>Metas e parâmetros</h2>
+      <form class="fields" onsubmit="salvarPatr(event)">
+        <label>Valor inicial (R$)<input type="number" step="0.01" name="valorInicial" value="${p.valorInicial}"></label>
+        <label>Data de início<input type="date" name="dataInicio" value="${p.dataInicio}"></label>
+        <label>Meta (R$)<input type="number" step="0.01" min="0" name="meta" value="${p.meta}"></label>
+        <label>Prazo (anos)<input type="number" step="1" min="0" name="prazoAnos" value="${p.prazoAnos}"></label>
+        <label>Taxa anual (%)<input type="number" step="0.01" min="0" name="taxaAnual" value="${(p.taxaAnual * 100).toFixed(2)}"></label>
+        <label>Aporte mensal previsto (R$)<input type="number" step="0.01" min="0" name="aporteMensal" value="${p.aporteMensal}"></label>
+        <button>Salvar</button>
+      </form>
+    </section>
+    <section class="card"><h2>Novo aporte</h2>
+      <form class="fields" onsubmit="addAporte(event)">
+        <label>Data<input type="date" name="data" value="${hoje()}" required></label>
+        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
+        <label>Descrição<input type="text" name="descricao"></label>
+        <button>Adicionar</button>
+      </form>
+      <div class="scroll" style="margin-top:14px"><table>
+        <thead><tr><th>Data</th><th>Descrição</th><th class="num">Valor</th><th></th></tr></thead>
+        <tbody>${linhas}</tbody>
+      </table></div>
+    </section>`;
+};
+
+V.config = () => {
+  const c = S.config;
+  const bloco = blocoSync();
+  const cartoes = c.cartoes.map((x, i) => `<span class="chip">${esc(x)} <button class="small danger" onclick="delLista('cartoes',${i})">×</button></span>`).join('') || '<span class="muted">Nenhum cartão.</span>';
+  const cats = c.categorias.map((x, i) => `<span class="chip">${esc(x)} <button class="small danger" onclick="delLista('categorias',${i})">×</button></span>`).join('');
+  return `
+    ${bloco}
+    <section class="card"><h2>Configurações gerais</h2>
+      <form class="fields" onsubmit="salvarCfg(event)">
+        <label>Saldo inicial da conta (R$)<input type="number" step="0.01" name="saldoConta" value="${c.saldoConta}"></label>
+        <label>Primeiro mês da projeção<input type="month" name="primeiroMes" value="${c.primeiroMes}" required></label>
+        <label>Mês de referência<input type="month" name="mesRef" value="${c.mesRef}" required></label>
+        <button>Salvar</button>
+      </form>
+    </section>
+    <section class="card"><h2>Cartões (até 8)</h2>
+      <div style="margin-bottom:12px">${cartoes}</div>
+      <form class="fields" onsubmit="addLista(event,'cartoes')">
+        <label>Novo cartão<input type="text" name="nome" required></label>
+        <button>Adicionar</button>
+      </form>
+    </section>
+    <section class="card"><h2>Categorias</h2>
+      <div style="margin-bottom:12px">${cats}</div>
+      <form class="fields" onsubmit="addLista(event,'categorias')">
+        <label>Nova categoria<input type="text" name="nome" required></label>
+        <button>Adicionar</button>
+      </form>
+      <p class="muted">Categorias em uso em lançamentos ou recorrentes não podem ser removidas.</p>
+    </section>`;
+};
+
+// Aviso quando há dados e o último backup exportado tem mais de 30 dias.
+function avisoBackup() {
+  const temDados = S.recorrentes.length || S.parcelados.length || S.eventuais.length ||
+    S.lancamentos.length || S.patrimonio.aportes.length;
+  if (!temDados) return '';
+  const dias = S.ultimoBackup ? Math.floor((new Date(hoje()) - new Date(S.ultimoBackup)) / 864e5) : null;
+  if (dias !== null && dias <= 30) return '';
+  const quando = dias === null ? 'Você ainda não exportou um backup.' : `Último backup há ${dias} dias.`;
+  return `<div class="aviso"><span>${quando} Os dados ficam salvos só neste navegador.</span>
+    <button class="small" onclick="exportar()">Exportar backup</button></div>`;
+}
+
+function render() {
+  const navX = $('abas').scrollLeft;
+  $('aviso').innerHTML = avisoBackup();
+  $('abas').innerHTML = [
+    ['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['orcamento', 'Orçamento'],
+    ['lancamentos', 'Lançamentos'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'],
+    ['eventuais', 'Eventuais'], ['patrimonio', 'Patrimônio'], ['config', 'Configurações']
+  ].map(([k, t]) => `<button class="tab ${k === aba ? 'on' : ''}" onclick="ir('${k}')">${t}</button>`).join('');
+  // Preserva as posições de rolagem (tabelas largas e barra de abas) entre redesenhos.
+  const posY = window.scrollY;
+  const mudouAba = aba !== abaRenderizada;
+  const scrollsAntes = [...$('conteudo').querySelectorAll('.scroll')].map(el => el.scrollLeft);
+  $('conteudo').innerHTML = V[aba]();
+  abaRenderizada = aba;
+  $('abas').scrollLeft = navX;
+  if (!mudouAba) {
+    [...$('conteudo').querySelectorAll('.scroll')].forEach((el, i) => { el.scrollLeft = scrollsAntes[i] || 0; });
+    window.scrollTo(0, posY);
+  }
+}
+let abaRenderizada = null;
+
+/* ---------- handlers ---------- */
+function marcarFerias(m, on) {
+  if (on) S.ferias[m] = true; else delete S.ferias[m];
+  commit();
+}
+
+function setOrc(cat, valor) {
+  const m = S.config.mesRef;
+  if (!S.orcamentoMeses[m]) S.orcamentoMeses[m] = { ...S.orcamento };
+  S.orcamentoMeses[m][cat] = parseFloat(valor) || 0;
+  commit();
+}
+
+function copiarOrc(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const origem = mkOf(S.config.mesRef);
+  const de = f.de.value, ate = f.ate.value;
+  if (!de || !ate || mIdx(ate) < mIdx(de)) return alert('O mês final deve ser igual ou posterior ao inicial.');
+  const off = mIdx(ate) - mIdx(de);
+  if (off > 120) return alert('Período máximo: 10 anos.');
+  const destinos = [];
+  for (let o = 0; o <= off; o++) {
+    const m = addM(de, o);
+    if (m !== origem) destinos.push(m);
+  }
+  if (!destinos.length) return alert('O período não inclui meses diferentes do mês de referência.');
+  if (!confirm(`Copiar o orçamento de ${mNome(origem)} para ${destinos.length} mês(es)? Os orçamentos desses meses serão substituídos.`)) return;
+  const valores = { ...orcEfetivo(origem) };
+  destinos.forEach(m => { S.orcamentoMeses[m] = { ...valores }; });
+  commit();
+  alert(`Orçamento copiado para ${destinos.length} mês(es).`);
+}
+
+function setCfg(chave, valor) {
+  S.config[chave] = valor;
+  commit();
+}
+
+function salvarCfg(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  S.config.saldoConta = parseFloat(f.saldoConta.value) || 0;
+  S.config.primeiroMes = f.primeiroMes.value;
+  S.config.mesRef = f.mesRef.value;
+  commit();
+}
+
+function addLista(e, lista) {
+  e.preventDefault();
+  const nome = e.target.elements.nome.value.trim();
+  if (!nome) return;
+  if (S.config[lista].some(x => x.toLowerCase() === nome.toLowerCase())) return alert('Já existe.');
+  if (lista === 'cartoes' && S.config.cartoes.length >= 8) return alert('Limite de 8 cartões.');
+  S.config[lista].push(nome);
+  commit();
+}
+
+function delLista(lista, i) {
+  const nome = S.config[lista][i];
+  const usado = lista === 'cartoes'
+    ? S.parcelados.some(p => p.cartao === nome) || S.recorrentes.some(r => r.cartao === nome)
+    : S.lancamentos.some(l => l.categoria === nome) || S.recorrentes.some(r => r.categoria === nome);
+  if (usado) return alert(`"${nome}" está em uso em lançamentos ou recorrentes.`);
+  S.config[lista].splice(i, 1);
+  commit();
+}
+
+function excluir(tipo, id) {
+  if (!confirm('Excluir este item?')) return;
+  S[tipo] = S[tipo].filter(x => x.id !== id);
+  commit();
+}
+
+function togglePar(on) {
+  $('campos-parc').hidden = !on;
+  $('lbl-valor').hidden = on;
+}
+
+function addLanc(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const descricao = f.descricao.value.trim();
+  if (!descricao) return alert('Informe a descrição.');
+
+  if (f.parcelada.checked) {
+    const parcelas = parseInt(f.nParcelas.value, 10);
+    const valorParc = parseFloat(f.valorParcela.value);
+    if (!(parcelas >= 1)) return alert('Informe o número de parcelas.');
+    if (!(valorParc > 0)) return alert('Informe o valor de cada parcela.');
+    if (!f.cartaoParc.value) return alert('Escolha o cartão.');
+    if (!f.primeira.value) return alert('Informe o mês da 1ª parcela.');
+    S.parcelados.push({
+      id: uid(), dataCompra: f.data.value, cartao: f.cartaoParc.value, descricao,
+      categoria: f.categoria.value, valorTotal: Math.round(parcelas * valorParc * 100) / 100,
+      valorParcela: valorParc, parcelas, inicio: f.primeira.value
+    });
+  } else {
+    const valor = parseFloat(f.valor.value);
+    if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+    S.lancamentos.push({ id: uid(), data: f.data.value, descricao, categoria: f.categoria.value, forma: f.forma.value, valor });
+  }
+  commit();
+}
+
+function addRec(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const valor = parseFloat(f.valor.value);
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  if (f.grupo.value === 'Cartão' && !f.cartao.value) return alert('Escolha o cartão.');
+  if (f.fim.value && f.fim.value < f.inicio.value) return alert('A data final não pode ser anterior à inicial.');
+  S.recorrentes.push({
+    id: uid(), descricao: f.descricao.value.trim(), grupo: f.grupo.value,
+    cartao: f.grupo.value === 'Cartão' ? f.cartao.value : '',
+    categoria: f.categoria.value, valor, inicio: f.inicio.value, fim: f.fim.value
+  });
+  commit();
+}
+
+function addParc(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const valorTotal = parseFloat(f.valorTotal.value);
+  const parcelas = parseInt(f.parcelas.value, 10);
+  if (!(valorTotal > 0) || !(parcelas >= 1)) return alert('Confira o valor e o número de parcelas.');
+  S.parcelados.push({
+    id: uid(), dataCompra: f.dataCompra.value, cartao: f.cartao.value,
+    descricao: f.descricao.value.trim(), categoria: f.categoria.value,
+    valorTotal, parcelas, inicio: f.inicio.value
+  });
+  commit();
+}
+
+function addEv(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const valor = parseFloat(f.valor.value);
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  S.eventuais.push({ id: uid(), mes: f.mes.value, descricao: f.descricao.value.trim(), tipo: f.tipo.value, valor });
+  commit();
+}
+
+function salvarPatr(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  S.patrimonio = {
+    ...S.patrimonio,
+    valorInicial: parseFloat(f.valorInicial.value) || 0,
+    dataInicio: f.dataInicio.value || S.patrimonio.dataInicio,
+    meta: Math.max(0, parseFloat(f.meta.value) || 0),
+    prazoAnos: Math.max(0, parseFloat(f.prazoAnos.value) || 0),
+    taxaAnual: Math.max(0, parseFloat(f.taxaAnual.value) || 0) / 100,
+    aporteMensal: Math.max(0, parseFloat(f.aporteMensal.value) || 0)
+  };
+  commit();
+}
+
+function addAporte(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const valor = parseFloat(f.valor.value);
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  S.patrimonio.aportes.push({ id: uid(), data: f.data.value, valor, descricao: f.descricao.value.trim() });
+  commit();
+}
+
+function excluirAporte(id) {
+  if (!confirm('Excluir este aporte?')) return;
+  S.patrimonio.aportes = S.patrimonio.aportes.filter(a => a.id !== id);
+  commit();
+}
+
+/* ---------- importação / exportação ---------- */
+function importarPlanilhaLegada(todas) {
+  (() => {
+    try {
+      const grade = nome => todas[nome] || [];
+      const cel = (g, linha, col) => ((g[linha] || [])[col]) ?? null;
+      const cfg = grade('Config'), rec = grade('Recorrentes'), par = grade('Compras_Parceladas');
+      const ev = grade('Eventuais'), lan = grade('Lancamentos'), orc = grade('Orcamento'), proj = grade('Projecao_36m');
+      if (!cfg.length) throw new Error('sem aba Config');
+
+      const primeiroMes = mkOf(isoData(cel(cfg, 2, 1))) || S.config.primeiroMes;
+      const categorias = [];
+      for (let i = 7; i <= 15; i++) { const v = cel(cfg, i, 1); if (v) categorias.push(String(v).trim()); }
+      const cartoes = [];
+      for (let i = 7; i <= 14; i++) { const v = cel(cfg, i, 0); if (v) cartoes.push(String(v).trim()); }
+      const orcamento = {};
+      categorias.forEach((c, i) => { const v = Number(cel(orc, 4 + i, 1)) || 0; if (v) orcamento[c] = v; });
+      const ferias = {};
+      for (let i = 0; i < 36; i++) { if (Number(cel(proj, 3 + i, 9)) === 1) ferias[addM(primeiroMes, i)] = true; }
+
+      const recorrentes = rec.slice(1).filter(r => r[0] && r[4]).map(r => ({
+        id: uid(), descricao: String(r[0]), grupo: String(r[1] || 'Fixo'), cartao: r[2] ? String(r[2]) : '',
+        categoria: r[3] ? String(r[3]) : 'Outros', valor: Number(r[4]) || 0,
+        inicio: isoData(r[5]) || hoje(), fim: isoData(r[6])
+      }));
+      const parcelados = par.slice(1).filter(r => r[2] && r[3] && r[4]).map(r => ({
+        id: uid(), dataCompra: isoData(r[0]) || hoje(), cartao: String(r[1] || ''), descricao: String(r[2]),
+        valorTotal: Number(r[3]), parcelas: Math.max(1, parseInt(r[4], 10)),
+        inicio: mkOf(isoData(r[5])) || addM(mkOf(isoData(r[0]) || hoje()), 1)
+      }));
+      const eventuais = ev.slice(1).filter(r => r[0] && r[3]).map(r => ({
+        id: uid(), mes: mkOf(isoData(r[0])), descricao: String(r[1] || ''), tipo: String(r[2] || 'Despesa'), valor: Number(r[3]) || 0
+      }));
+      const lancamentos = lan.slice(1).filter(r => r[0] && r[3]).map(r => ({
+        id: uid(), data: isoData(r[0]) || hoje(), descricao: String(r[1] || ''), categoria: String(r[2] || 'Outros'),
+        valor: Number(r[3]) || 0, forma: String(r[4] || '')
+      }));
+
+      if (!confirm('Importar a planilha substitui orçamento, recorrentes, parcelamentos, eventuais e lançamentos atuais. O patrimônio é mantido. Continuar?')) return;
+      S = {
+        ...S,
+        config: {
+          ...S.config,
+          saldoConta: Number(cel(cfg, 3, 1)) || 0,
+          primeiroMes,
+          cartoes: cartoes.length ? cartoes : S.config.cartoes,
+          categorias: categorias.length ? categorias : S.config.categorias
+        },
+        orcamento, orcamentoMeses: {}, recorrentes, parcelados, eventuais, lancamentos, ferias
+      };
+      commit();
+      alert(`Planilha importada: ${recorrentes.length} recorrentes, ${parcelados.length} parcelamento(s), ${eventuais.length} evento(s) e ${lancamentos.length} lançamento(s).`);
+    } catch (err) {
+      alert('Não consegui ler essa planilha. Use o arquivo .xlsx do Orçamento e Projeção.');
+    }
+  })();
+}
+
+/* ---------- leitor/escritor de .xlsx embutido (sem bibliotecas externas) ---------- */
+const XL = (() => {
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  const XMLH = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+  const NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const NS_PKG = 'http://schemas.openxmlformats.org/package/2006/relationships';
+  const esc = s => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const colNome = c => { let s = ''; c += 1; while (c > 0) { const r = (c - 1) % 26; s = String.fromCharCode(65 + r) + s; c = Math.floor((c - 1) / 26); } return s; };
+  const colNum = s => [...s].reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+  const TAB = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = TAB[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+
+  // Monta um arquivo ZIP sem compressão (método 0), com os XMLs já em texto.
+  function zip(arquivos) {
+    const partes = [], cd = [];
+    let off = 0;
+    arquivos.forEach(a => {
+      const nome = enc.encode(a.nome), dados = enc.encode(a.xml), crc = crc32(dados);
+      const loc = new DataView(new ArrayBuffer(30));
+      loc.setUint32(0, 0x04034b50, true); loc.setUint16(4, 20, true); loc.setUint16(6, 0x0800, true);
+      loc.setUint16(8, 0, true); loc.setUint16(10, 0, true); loc.setUint16(12, 0x21, true);
+      loc.setUint32(14, crc, true); loc.setUint32(18, dados.length, true); loc.setUint32(22, dados.length, true);
+      loc.setUint16(26, nome.length, true); loc.setUint16(28, 0, true);
+      partes.push(loc, nome, dados);
+      const cen = new DataView(new ArrayBuffer(46));
+      cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true); cen.setUint16(8, 0x0800, true);
+      cen.setUint16(10, 0, true); cen.setUint16(12, 0, true); cen.setUint16(14, 0x21, true);
+      cen.setUint32(16, crc, true); cen.setUint32(20, dados.length, true); cen.setUint32(24, dados.length, true);
+      cen.setUint16(28, nome.length, true); cen.setUint16(30, 0, true); cen.setUint16(32, 0, true);
+      cen.setUint16(34, 0, true); cen.setUint16(36, 0, true); cen.setUint32(38, 0, true); cen.setUint32(42, off, true);
+      cd.push(cen, nome);
+      off += 30 + nome.length + dados.length;
+    });
+    const cdTam = cd.reduce((t, p) => t + p.byteLength, 0);
+    const fim = new DataView(new ArrayBuffer(22));
+    fim.setUint32(0, 0x06054b50, true); fim.setUint16(8, arquivos.length, true); fim.setUint16(10, arquivos.length, true);
+    fim.setUint32(12, cdTam, true); fim.setUint32(16, off, true);
+    return new Blob([...partes, ...cd, fim], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  // Gera o .xlsx a partir de abas: [{nome, linhas}], onde célula = valor | {v, f, z}.
+  function gerar(abas) {
+    const estilos = [], idxEstilo = new Map();
+    const estiloDe = z => {
+      if (!z) return 0;
+      if (!idxEstilo.has(z)) { estilos.push(z); idxEstilo.set(z, estilos.length); }
+      return idxEstilo.get(z);
+    };
+    const planilhas = abas.map(a => {
+      let linhas = '';
+      (a.linhas || []).forEach((linha, r) => {
+        let celulas = '';
+        (linha || []).forEach((c, k) => {
+          if (c === null || c === undefined) return;
+          const obj = typeof c === 'object' ? c : { v: c };
+          const ref = colNome(k) + (r + 1);
+          const sAttr = (() => { const s = estiloDe(obj.z); return s ? ` s="${s}"` : ''; })();
+          const v = obj.v;
+          if (obj.f) {
+            const f = `<f>${esc(String(obj.f).replace(/^=/, ''))}</f>`;
+            if (typeof v === 'number' && isFinite(v)) celulas += `<c r="${ref}"${sAttr}>${f}<v>${v}</v></c>`;
+            else if (typeof v === 'string' && v !== '') celulas += `<c r="${ref}"${sAttr} t="str">${f}<v>${esc(v)}</v></c>`;
+            else celulas += `<c r="${ref}"${sAttr}>${f}</c>`;
+          } else if (typeof v === 'number') {
+            if (isFinite(v)) celulas += `<c r="${ref}"${sAttr}><v>${v}</v></c>`;
+          } else if (v !== undefined && v !== null && v !== '') {
+            celulas += `<c r="${ref}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
+          }
+        });
+        if (celulas) linhas += `<row r="${r + 1}">${celulas}</row>`;
+      });
+      return `${XMLH}<worksheet xmlns="${NS_MAIN}"><sheetData>${linhas}</sheetData></worksheet>`;
+    });
+    const numFmts = estilos.length ? `<numFmts count="${estilos.length}">${estilos.map((z, i) => `<numFmt numFmtId="${164 + i}" formatCode="${esc(z)}"/>`).join('')}</numFmts>` : '';
+    const xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>']
+      .concat(estilos.map((z, i) => `<xf numFmtId="${164 + i}" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>`)).join('');
+    const styles = `${XMLH}<styleSheet xmlns="${NS_MAIN}">${numFmts}<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${estilos.length + 1}">${xfs}</cellXfs></styleSheet>`;
+    const workbook = `${XMLH}<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_REL}"><sheets>${abas.map((a, i) => `<sheet name="${esc(a.nome)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>`;
+    const rels = `${XMLH}<Relationships xmlns="${NS_PKG}">${abas.map((a, i) => `<Relationship Id="rId${i + 1}" Type="${NS_REL}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${abas.length + 1}" Type="${NS_REL}/styles" Target="styles.xml"/></Relationships>`;
+    const ct = `${XMLH}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${abas.map((a, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
+    const raiz = `${XMLH}<Relationships xmlns="${NS_PKG}"><Relationship Id="rId1" Type="${NS_REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+    return zip([
+      { nome: '[Content_Types].xml', xml: ct }, { nome: '_rels/.rels', xml: raiz },
+      { nome: 'xl/workbook.xml', xml: workbook }, { nome: 'xl/_rels/workbook.xml.rels', xml: rels },
+      { nome: 'xl/styles.xml', xml: styles },
+      ...planilhas.map((x, i) => ({ nome: `xl/worksheets/sheet${i + 1}.xml`, xml: x }))
+    ]);
+  }
+
+  // Lê o .xlsx: devolve { nomeDaAba: linhas }, onde linhas[r][c] é valor, texto ou null.
+  async function ler(buf) {
+    const u8 = new Uint8Array(buf), dv = new DataView(buf);
+    let fim = -1;
+    for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { fim = i; break; }
+    if (fim < 0) throw new Error('arquivo não é um .xlsx');
+    const n = dv.getUint16(fim + 10, true);
+    let p = dv.getUint32(fim + 16, true);
+    const entradas = {};
+    for (let k = 0; k < n; k++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('diretório inválido');
+      const metodo = dv.getUint16(p + 10, true), csz = dv.getUint32(p + 20, true);
+      const nl = dv.getUint16(p + 28, true), el = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+      const loc = dv.getUint32(p + 42, true);
+      entradas[dec.decode(u8.subarray(p + 46, p + 46 + nl))] = { metodo, csz, loc };
+      p += 46 + nl + el + cl;
+    }
+    const conteudo = async nome => {
+      const e = entradas[nome];
+      if (!e) return null;
+      const ini = e.loc + 30 + dv.getUint16(e.loc + 26, true) + dv.getUint16(e.loc + 28, true);
+      const dados = u8.subarray(ini, ini + e.csz);
+      let bytes = dados;
+      if (e.metodo === 8) {
+        if (typeof DecompressionStream === 'undefined') throw new Error('navegador sem descompressão');
+        const saida = new Blob([dados]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        bytes = new Uint8Array(await new Response(saida).arrayBuffer());
+      } else if (e.metodo !== 0) throw new Error('compressão não suportada');
+      return dec.decode(bytes);
+    };
+    const xml = s => new DOMParser().parseFromString(s, 'application/xml');
+    const textoDe = el => [...el.getElementsByTagName('t')].map(t => t.textContent).join('');
+    const compartilhadas = [];
+    const sst = await conteudo('xl/sharedStrings.xml');
+    if (sst) [...xml(sst).getElementsByTagName('si')].forEach(si => compartilhadas.push(textoDe(si)));
+    const wb = xml(await conteudo('xl/workbook.xml'));
+    const rels = xml(await conteudo('xl/_rels/workbook.xml.rels'));
+    const alvo = {};
+    [...rels.getElementsByTagName('Relationship')].forEach(r => { alvo[r.getAttribute('Id')] = r.getAttribute('Target'); });
+    const resultado = {};
+    for (const sh of [...wb.getElementsByTagName('sheet')]) {
+      let t = (alvo[sh.getAttribute('r:id')] || '').replace(/^\//, '');
+      if (!t.startsWith('xl/')) t = 'xl/' + t;
+      resultado[sh.getAttribute('name')] = lerAba(await conteudo(t), compartilhadas, textoDe);
+    }
+    return resultado;
+  }
+
+  function lerAba(xmlTexto, compartilhadas, textoDe) {
+    const linhas = [];
+    if (!xmlTexto) return linhas;
+    const doc = new DOMParser().parseFromString(xmlTexto, 'application/xml');
+    [...doc.getElementsByTagName('row')].forEach((linha, idx) => {
+      const r = linha.getAttribute('r') ? +linha.getAttribute('r') - 1 : idx;
+      linhas[r] = linhas[r] || [];
+      [...linha.getElementsByTagName('c')].forEach(c => {
+        const col = colNum((c.getAttribute('r') || 'A').replace(/\d+/g, ''));
+        const tipo = c.getAttribute('t');
+        const v = c.getElementsByTagName('v')[0];
+        const is = c.getElementsByTagName('is')[0];
+        let val = null;
+        if (tipo === 's' && v) val = compartilhadas[+v.textContent] ?? null;
+        else if (tipo === 'inlineStr' && is) val = textoDe(is);
+        else if (tipo === 'str' && v) val = v.textContent;
+        else if (tipo === 'b' && v) val = v.textContent === '1';
+        else if (tipo === 'e' || !v) val = null;
+        else { const x = Number(v.textContent); val = isNaN(x) ? v.textContent : x; }
+        linhas[r][col] = val;
+      });
+    });
+    for (let i = 0; i < linhas.length; i++) {
+      linhas[i] = linhas[i] || [];
+      for (let j = 0; j < linhas[i].length; j++) if (linhas[i][j] === undefined) linhas[i][j] = null;
+    }
+    return linhas;
+  }
+
+  function baixar(blob, nome) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = nome;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  return { gerar, ler, baixar };
+})();
+
+/* ---------- planilha com fórmulas: exportar e reimportar ---------- */
+const FMT_DATA = 'dd/mm/yyyy', FMT_MES = 'mm/yyyy', FMT_VALOR = '#,##0.00', FMT_PCT = '0.00%';
+const NMESES = 36;
+const N = (v, z) => ({ v, z });
+const F = (f, v, z) => ({ f, v: v === undefined || v === null ? '' : v, z });
+const colL = c => { let s = ''; c += 1; while (c > 0) { const r = (c - 1) % 26; s = String.fromCharCode(65 + r) + s; c = Math.floor((c - 1) / 26); } return s; };
+const serialDate = iso => Math.round((Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) - Date.UTC(1899, 11, 30)) / 864e5);
+const serialMes = mk => serialDate(mk + '-01');
+const at = (rows, r, c) => ((rows && rows[r - 1]) || [])[c] ?? null; // r: linha (1-based), c: coluna (0-based)
+
+// Monta as abas como células (valor, fórmula e formato). Não depende da biblioteca de planilhas.
+function montarPlanilha() {
+  const c = S.config;
+  const cats = c.categorias, cartoes = c.cartoes;
+  const nCat = cats.length;
+  const ultimaCat = 3 + nCat; // última linha de Orcamento_Meses (1-based)
+  // A aba de orçamento cobre os 36 meses da projeção e também o mês de referência (se for anterior).
+  const inicioOrc = mIdx(c.mesRef) < mIdx(c.primeiroMes) ? c.mesRef : c.primeiroMes;
+  const nOrc = mIdx(c.primeiroMes) + NMESES - mIdx(inicioOrc);
+  const mesesOrc = Array.from({ length: nOrc }, (_, i) => addM(inicioOrc, i));
+  const meses = Array.from({ length: NMESES }, (_, i) => addM(c.primeiroMes, i));
+  const colMes = i => colL(i + 1); // i = 0 → B
+  const ultCol = colMes(nOrc - 1);
+  const abas = [];
+
+  abas.push({ nome: 'Leia-me', linhas: [
+    ['Controle Financeiro · planilha com fórmulas'],
+    [],
+    ['Edite os valores nas abas de dados e salve. No app, use "Importar planilha .xlsx" para atualizar os dados.'],
+    ['Abas de dados (editáveis): Config, Recorrentes, Compras_Parceladas, Eventuais, Lancamentos, Orcamento_Meses, Patrimonio, Aportes.'],
+    ['Abas calculadas (não edite; são fórmulas): Orcamento, Faturas, Projecao_36m.'],
+    ['Datas: dd/mm/aaaa. Meses: use o primeiro dia do mês. Em Projecao_36m, marque 1 na coluna J para as férias.'],
+  ]});
+
+  // Config
+  const cfg = [
+    ['Configurações'],
+    [],
+    ['Primeiro mês da projeção', N(serialMes(c.primeiroMes), FMT_MES)],
+    ['Saldo inicial da conta (R$)', N(c.saldoConta, FMT_VALOR)],
+    ['Mês de referência (orçamento e resumo)', N(serialMes(c.mesRef), FMT_MES)],
+    [],
+    ['Cartões (até 8)', 'Categorias', 'Grupos', 'Tipo eventual', 'Formas de pagamento'],
+  ];
+  const listas = [cartoes, cats, GRUPOS, ['Receita', 'Despesa'], FORMAS];
+  const nLinhasCfg = Math.max(...listas.map(l => l.length), 8);
+  for (let i = 0; i < nLinhasCfg; i++) cfg.push(listas.map(l => (l[i] ?? null)));
+  abas.push({ nome: 'Config', linhas: cfg });
+
+  // Recorrentes
+  const rec = [['Descrição', 'Grupo', 'Cartão (se Cartão)', 'Categoria', 'Valor mensal', 'Início', 'Fim (vazio = sem fim)', 'Fim considerado']];
+  const nRec = Math.max(299, S.recorrentes.length);
+  for (let i = 0; i < nRec; i++) {
+    const r = i + 2, it = S.recorrentes[i];
+    const formulaH = F(`IF(G${r}="",DATE(2099,12,1),G${r})`, serialDate(it && it.fim ? it.fim : '2099-12-01'), FMT_DATA);
+    if (it) rec.push([it.descricao, it.grupo, it.cartao || null, it.categoria, N(it.valor, FMT_VALOR),
+      N(serialDate(it.inicio), FMT_DATA), it.fim ? N(serialDate(it.fim), FMT_DATA) : null, formulaH]);
+    else rec.push([null, null, null, null, null, null, null, formulaH]);
+  }
+  abas.push({ nome: 'Recorrentes', linhas: rec });
+
+  // Compras parceladas
+  const comp = [['Data da compra', 'Cartão', 'Descrição', 'Valor total', 'Nº de parcelas', '1ª parcela (1º dia do mês)', 'Valor da parcela', 'Última parcela', 'Categoria']];
+  const nComp = Math.max(299, S.parcelados.length);
+  for (let i = 0; i < nComp; i++) {
+    const r = i + 2, p = S.parcelados[i];
+    const fG = `IF(OR(D${r}="",E${r}=""),"",ROUND(D${r}/E${r},2))`;
+    const fH = `IF(OR(F${r}="",E${r}=""),"",EDATE(F${r},E${r}-1))`;
+    if (p) comp.push([N(serialDate(p.dataCompra), FMT_DATA), p.cartao, p.descricao, N(p.valorTotal, FMT_VALOR), p.parcelas,
+      N(serialMes(p.inicio), FMT_DATA), F(fG, valorParcela(p), FMT_VALOR), F(fH, serialMes(ultimaParcela(p)), FMT_DATA), p.categoria || 'Outros']);
+    else comp.push([null, null, null, null, null, null, F(fG, '', FMT_VALOR), F(fH, '', FMT_DATA), null]);
+  }
+  abas.push({ nome: 'Compras_Parceladas', linhas: comp });
+
+  // Eventuais
+  const ev = [['Mês', 'Descrição', 'Tipo', 'Valor']];
+  S.eventuais.forEach(e => ev.push([N(serialMes(e.mes), FMT_MES), e.descricao, e.tipo, N(e.valor, FMT_VALOR)]));
+  abas.push({ nome: 'Eventuais', linhas: ev });
+
+  // Lançamentos (gastos executados)
+  const lan = [['Data', 'Descrição', 'Categoria', 'Valor', 'Forma de pagamento']];
+  S.lancamentos.forEach(l => lan.push([N(serialDate(l.data), FMT_DATA), l.descricao, l.categoria, N(l.valor, FMT_VALOR), l.forma || null]));
+  abas.push({ nome: 'Lancamentos', linhas: lan });
+
+  // Orçamento por mês (valores editáveis)
+  const om = [
+    ['Orçamento mensal por categoria (edite os valores)'],
+    ['Os nomes das categorias vêm da aba Config.'],
+    ['Categoria', ...mesesOrc.map(m => N(serialMes(m), FMT_MES))],
+  ];
+  cats.forEach((cat, i) => om.push([F(`Config!B${8 + i}`, cat), ...mesesOrc.map(m => N(Number((orcEfetivo(m) || {})[cat]) || 0, FMT_VALOR))]));
+  om.push(['Total', ...mesesOrc.map((m, i) => F(`SUM(${colMes(i)}4:${colMes(i)}${ultimaCat})`, totalOrc(m), FMT_VALOR))]);
+  abas.push({ nome: 'Orcamento_Meses', linhas: om });
+
+  // Orçamento x executado do mês de referência (fórmulas)
+  const resumo = [
+    ['Orçamento x executado · mês de referência (tudo calculado)'],
+    ['Mês de referência', F('Config!B5', serialMes(c.mesRef), FMT_MES)],
+    ['Categoria', 'Orçamento mensal', 'Executado no mês', 'Diferença', '% usado'],
+  ];
+  let totB = 0, totC = 0;
+  cats.forEach((cat, i) => {
+    const r = 4 + i;
+    const bud = Number((orcEfetivo(c.mesRef) || {})[cat]) || 0;
+    const exe = execCat(cat, c.mesRef);
+    totB += bud; totC += exe;
+    resumo.push([
+      F(`Config!B${8 + i}`, cat),
+      F(`IFERROR(INDEX(Orcamento_Meses!$B${r}:$${ultCol}${r},MATCH(Config!$B$5,Orcamento_Meses!$B$3:$${ultCol}$3,0)),0)`, bud, FMT_VALOR),
+      F(`SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$C$2:$C$2000,A${r},Lancamentos!$A$2:$A$2000,">="&Config!$B$5,Lancamentos!$A$2:$A$2000,"<"&EDATE(Config!$B$5,1))+SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$I$2:$I$300,A${r},Compras_Parceladas!$F$2:$F$300,"<="&Config!$B$5,Compras_Parceladas!$H$2:$H$300,">="&Config!$B$5)`, exe, FMT_VALOR),
+      F(`B${r}-C${r}`, bud - exe, FMT_VALOR),
+      F(`IF(B${r}=0,"",C${r}/B${r})`, bud === 0 ? '' : exe / bud, '0%'),
+    ]);
+  });
+  resumo.push(['Total',
+    F(`SUM(B4:B${ultimaCat})`, totB, FMT_VALOR), F(`SUM(C4:C${ultimaCat})`, totC, FMT_VALOR),
+    F(`B${ultimaCat + 1}-C${ultimaCat + 1}`, totB - totC, FMT_VALOR)]);
+  abas.push({ nome: 'Orcamento', linhas: resumo });
+
+  // Faturas por cartão (36 meses)
+  const fat = [['Fatura prevista por cartão (assinaturas + parcelamentos)'], [],
+    ['Mês', ...Array.from({ length: 8 }, (_, j) => F(`IF(Config!A${8 + j}="","",Config!A${8 + j})`, cartoes[j] || '')), 'Total faturas']];
+  meses.forEach((m, i) => {
+    const r = 4 + i;
+    const row = [i === 0 ? F('Config!$B$3', serialMes(m), FMT_MES) : F(`EDATE(A${r - 1},1)`, serialMes(m), FMT_MES)];
+    let total = 0;
+    for (let j = 0; j < 8; j++) {
+      const col = colL(j + 1), card = cartoes[j];
+      const val = card ? fatCartao(card, m) : 0;
+      total += val;
+      row.push(F(`IF(${col}$3="",0,SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$B$2:$B$300,${col}$3,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})+SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"Cartão",Recorrentes!$C$2:$C$300,${col}$3,Recorrentes!$F$2:$F$300,"<="&EOMONTH($A${r},0),Recorrentes!$H$2:$H$300,">="&$A${r}))`, val, FMT_VALOR));
+    }
+    row.push(F(`SUM(B${r}:I${r})`, total, FMT_VALOR));
+    fat.push(row);
+  });
+  abas.push({ nome: 'Faturas', linhas: fat });
+
+  // Projeção de 36 meses (fórmulas)
+  const proj = projecao(NMESES);
+  const pr = [
+    ['Projeção mês a mês (36 meses) · tudo calculado'],
+    ['Marque 1 na coluna J no mês em que o orçamento paga também o mês seguinte (o mês seguinte fica zerado).'],
+    ['Mês', 'Receitas fixas', 'Receitas eventuais', 'Total receitas', 'Despesas fixas', 'Faturas dos cartões', 'Despesas eventuais',
+      'Orçamento variável', 'Base de despesas do mês', 'Férias: marque 1', 'Ajuste de férias', 'Despesas totais do mês',
+      'Saldo do mês', 'Saldo acumulado', 'Executado (Lancamentos)', 'Previsto - executado'],
+  ];
+  const sumRecF = g => `SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"${g}",Recorrentes!$F$2:$F$300,"<="&EOMONTH($A{r},0),Recorrentes!$H$2:$H$300,">="&$A{r})`;
+  const sumEvF = t => `SUMIFS(Eventuais!$D$2:$D$300,Eventuais!$C$2:$C$300,"${t}",Eventuais!$A$2:$A$300,">="&$A{r},Eventuais!$A$2:$A$300,"<"&EDATE($A{r},1))`;
+  proj.forEach((x, i) => {
+    const r = 4 + i;
+    let adj;
+    if (i === 0) adj = `IF(J${r}=1,I${r + 1},0)`;
+    else if (i < NMESES - 1) adj = `IF(J${r}=1,I${r + 1},0)-IF(J${r - 1}=1,I${r},0)`;
+    else adj = `-IF(J${r - 1}=1,I${r},0)`;
+    pr.push([
+      i === 0 ? F('Config!$B$3', serialMes(x.m), FMT_MES) : F(`EDATE(A${r - 1},1)`, serialMes(x.m), FMT_MES),
+      F(sumRecF('Receita').replace(/\{r\}/g, r), x.rf, FMT_VALOR),
+      F(sumEvF('Receita').replace(/\{r\}/g, r), x.re, FMT_VALOR),
+      F(`B${r}+C${r}`, x.rt, FMT_VALOR),
+      F(sumRecF('Fixo').replace(/\{r\}/g, r), x.ef, FMT_VALOR),
+      F(`Faturas!J${r}`, x.fat, FMT_VALOR),
+      F(sumEvF('Despesa').replace(/\{r\}/g, r), x.ed, FMT_VALOR),
+      F(`SUM(INDEX(Orcamento_Meses!$B$4:$${ultCol}$${ultimaCat},0,MATCH($A${r},Orcamento_Meses!$B$3:$${ultCol}$3,0)))`, x.ov, FMT_VALOR),
+      F(`E${r}+F${r}+G${r}+H${r}`, x.I, FMT_VALOR),
+      N(x.ferias ? 1 : 0),
+      F(adj, x.adj, FMT_VALOR),
+      F(`I${r}+K${r}`, x.L, FMT_VALOR),
+      F(`D${r}-L${r}`, x.saldo, FMT_VALOR),
+      F(`Config!$B$4+SUM($M$4:M${r})`, x.acum, FMT_VALOR),
+      F(`SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$A$2:$A$2000,">="&$A${r},Lancamentos!$A$2:$A$2000,"<"&EDATE($A${r},1))+SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})`, x.exec, FMT_VALOR),
+      F(`IF($A${r}<=TODAY(),L${r}-O${r},0)`, x.dif, FMT_VALOR),
+    ]);
+  });
+  abas.push({ nome: 'Projecao_36m', linhas: pr });
+
+  // Patrimônio
+  const p = S.patrimonio, pj = projPatr();
+  abas.push({ nome: 'Patrimonio', linhas: [
+    ['Patrimônio · valores editáveis e cálculos'],
+    [],
+    ['Valor inicial (R$)', N(p.valorInicial, FMT_VALOR)],
+    ['Taxa anual (ex.: 8% = 0,08)', N(p.taxaAnual, FMT_PCT)],
+    ['Prazo (anos)', N(p.prazoAnos)],
+    ['Aporte mensal previsto (R$)', N(p.aporteMensal, FMT_VALOR)],
+    ['Meta (R$)', N(p.meta, FMT_VALOR)],
+    [],
+    ['Total de aportes (R$)', F('SUM(Aportes!C2:C1000)', sum(p.aportes), FMT_VALOR)],
+    ['Patrimônio atual (R$)', F('B3+B9', pj.P, FMT_VALOR)],
+    ['Taxa mensal equivalente', F('(1+B4)^(1/12)-1', pj.i, '0.0000%')],
+    ['Meses', F('B5*12', Math.round(p.prazoAnos * 12))],
+    ['Valor projetado (R$)', F('IF(B11=0,B10+B6*B12,B10*(1+B11)^B12+B6*((1+B11)^B12-1)/B11)', pj.fv, FMT_VALOR)],
+  ]});
+
+  // Aportes do patrimônio
+  const apo = [['Data', 'Descrição', 'Valor']];
+  p.aportes.forEach(a => apo.push([N(serialDate(a.data), FMT_DATA), a.descricao || null, N(a.valor, FMT_VALOR)]));
+  abas.push({ nome: 'Aportes', linhas: apo });
+
+  return abas;
+}
+
+// Gera o .xlsx com fórmulas e formatos, usando o escritor embutido.
+function exportarPlanilha() {
+  XL.baixar(XL.gerar(montarPlanilha()), `planilha-controle-financeiro-${hoje()}.xlsx`);
+}
+
+// Lê uma planilha no formato gerado pelo app. g: { nomeDaAba: linhas }
+function interpretarNova(g) {
+  const cfg = g.Config;
+  const primeiroMes = mkOf(isoData(at(cfg, 3, 1))) || S.config.primeiroMes;
+  const mesRef = mkOf(isoData(at(cfg, 5, 1))) || S.config.mesRef;
+  const saldoConta = Number(at(cfg, 4, 1)) || 0;
+  const cartoes = [];
+  for (let i = 0; i < 8; i++) { const v = at(cfg, 8 + i, 0); if (v) cartoes.push(String(v).trim()); }
+  const categorias = [];
+  for (let i = 0; i < 30; i++) { const v = at(cfg, 8 + i, 1); if (!v) break; categorias.push(String(v).trim()); }
+
+  const recorrentes = g.Recorrentes.slice(1).filter(r => r[0] && r[4]).map(r => ({
+    id: uid(), descricao: String(r[0]), grupo: String(r[1] || 'Fixo'), cartao: r[2] ? String(r[2]) : '',
+    categoria: r[3] ? String(r[3]) : 'Outros', valor: Number(r[4]) || 0,
+    inicio: isoData(r[5]) || hoje(), fim: isoData(r[6])
+  }));
+
+  const parcelados = g.Compras_Parceladas.slice(1).filter(r => r[2] && r[3] && r[4]).map(r => {
+    const dataCompra = isoData(r[0]) || hoje();
+    return {
+      id: uid(), dataCompra, cartao: String(r[1] || ''), descricao: String(r[2]),
+      categoria: r[8] ? String(r[8]) : 'Outros', valorTotal: Number(r[3]) || 0,
+      parcelas: Math.max(1, parseInt(r[4], 10)),
+      inicio: mkOf(isoData(r[5])) || addM(mkOf(dataCompra), 1)
+    };
+  });
+
+  const eventuais = g.Eventuais.slice(1).filter(r => r[0] && r[3]).map(r => ({
+    id: uid(), mes: mkOf(isoData(r[0])), descricao: String(r[1] || ''), tipo: String(r[2] || 'Despesa'), valor: Number(r[3]) || 0
+  }));
+
+  const lancamentos = g.Lancamentos.slice(1).filter(r => r[0] && r[3]).map(r => ({
+    id: uid(), data: isoData(r[0]) || hoje(), descricao: String(r[1] || ''), categoria: String(r[2] || 'Outros'),
+    valor: Number(r[3]) || 0, forma: r[4] ? String(r[4]) : ''
+  }));
+
+  const om = g.Orcamento_Meses;
+  const header = om[2] || [];
+  const colMeses = [];
+  for (let c = 1; c < header.length; c++) { const mk = mkOf(isoData(header[c])); if (mk) colMeses.push({ c, mk }); }
+  const orcamentoMeses = {};
+  colMeses.forEach(({ mk }) => { orcamentoMeses[mk] = {}; });
+  for (let r = 4; r <= om.length; r++) {
+    const nome = at(om, r, 0);
+    if (!nome || String(nome).trim().toLowerCase() === 'total') continue;
+    colMeses.forEach(({ c, mk }) => { orcamentoMeses[mk][String(nome).trim()] = Number(at(om, r, c)) || 0; });
+  }
+
+  const ferias = {};
+  const proj = g.Projecao_36m || [];
+  for (let r = 4; r < 4 + NMESES; r++) {
+    if (Number(at(proj, r, 9)) === 1) ferias[mkOf(isoData(at(proj, r, 0))) || addM(primeiroMes, r - 4)] = true;
+  }
+
+  const patrimonio = g.Patrimonio ? {
+    ...S.patrimonio,
+    valorInicial: Number(at(g.Patrimonio, 3, 1)) || 0,
+    taxaAnual: Number(at(g.Patrimonio, 4, 1)) || 0,
+    prazoAnos: Number(at(g.Patrimonio, 5, 1)) || 0,
+    aporteMensal: Number(at(g.Patrimonio, 6, 1)) || 0,
+    meta: Number(at(g.Patrimonio, 7, 1)) || 0,
+    aportes: (g.Aportes || []).slice(1).filter(r => r[0] && r[2]).map(r => ({
+      id: uid(), data: isoData(r[0]) || hoje(), descricao: String(r[1] || ''), valor: Number(r[2]) || 0
+    }))
+  } : S.patrimonio;
+
+  return {
+    config: {
+      ...S.config, saldoConta, primeiroMes, mesRef,
+      cartoes: cartoes.length ? cartoes : S.config.cartoes,
+      categorias: categorias.length ? categorias : S.config.categorias
+    },
+    orcamento: {}, orcamentoMeses, recorrentes, parcelados, eventuais, lancamentos, ferias, patrimonio
+  };
+}
+
+// Lê o arquivo escolhido e decide: planilha do app (com Orcamento_Meses) ou a planilha original.
+function lerPlanilha(input, aoLer) {
+  const f = input.files[0];
+  input.value = '';
+  if (!f) return;
+  f.arrayBuffer().then(buf => XL.ler(buf)).then(aoLer, () => alert('Não consegui ler essa planilha. Use um arquivo .xlsx.'));
+}
+
+function importarPlanilha(input) {
+  lerPlanilha(input, g => {
+    if (!g.Orcamento_Meses || !g.Config) return importarPlanilhaLegada(g);
+    try {
+      const nova = interpretarNova(g);
+      if (!confirm('Importar a planilha substitui todos os dados atuais pelo conteúdo dela. Continuar?')) return;
+      S = { ...S, ...nova };
+      commit();
+      alert(`Planilha importada: ${S.recorrentes.length} recorrentes, ${S.parcelados.length} parcelamento(s), ${S.eventuais.length} evento(s), ${S.lancamentos.length} lançamento(s).`);
+    } catch (err) {
+      alert('A planilha tem um formato inesperado. Use a planilha exportada pelo app.');
+    }
+  });
+}
+
+function importarJSON(input) {
+  const f = input.files[0];
+  input.value = '';
+  if (!f) return;
+  const leitor = new FileReader();
+  leitor.onload = () => {
+    try {
+      const d = JSON.parse(leitor.result);
+      let novo;
+      if (d.config && d.patrimonio) novo = Object.assign(blank(), d);
+      else if (d.metas && Array.isArray(d.categorias)) novo = deBackup(d);
+      else throw new Error('formato');
+      if (!confirm('Substituir todos os dados atuais pelo backup?')) return;
+      S = novo;
+      commit();
+      alert('Backup importado com sucesso.');
+    } catch (err) {
+      alert('Arquivo inválido. Use um backup JSON do Controle Financeiro.');
+    }
+  };
+  leitor.readAsText(f);
+}
+
+function exportar() {
+  S.ultimoBackup = hoje();
+  salvar();
+  const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = `backup-controle-financeiro-${hoje()}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  render();
+}
+
+function exemplo() {
+  if (!confirm('Carregar os exemplos da planilha? O orçamento atual será substituído (o patrimônio é mantido).')) return;
+  S = {
+    ...S,
+    config: { ...S.config, saldoConta: 0, primeiroMes: '2026-11' },
+    orcamento: {},
+    orcamentoMeses: {},
+    recorrentes: [
+      { id: uid(), descricao: 'Salário (EXEMPLO)', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 8000, inicio: '2026-11-01', fim: '' },
+      { id: uid(), descricao: 'Nubank - assinaturas (EXEMPLO)', grupo: 'Cartão', cartao: 'Nubank', categoria: 'Assinaturas', valor: 180, inicio: '2026-01-01', fim: '' },
+      { id: uid(), descricao: 'Aluguel (EXEMPLO)', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 2500, inicio: '2026-01-01', fim: '' },
+      { id: uid(), descricao: 'Financiamento carro (EXEMPLO)', grupo: 'Fixo', cartao: '', categoria: 'Transporte', valor: 950, inicio: '2025-06-01', fim: '2028-05-01' }
+    ],
+    parcelados: [
+      { id: uid(), dataCompra: '2026-10-20', cartao: 'Nubank', descricao: 'Notebook (EXEMPLO)', valorTotal: 6000, parcelas: 10, inicio: '2026-11' }
+    ],
+    eventuais: [
+      { id: uid(), mes: '2026-12', descricao: '13º salário (EXEMPLO)', tipo: 'Receita', valor: 4000 },
+      { id: uid(), mes: '2027-07', descricao: 'Férias recebidas (EXEMPLO)', tipo: 'Receita', valor: 2700 },
+      { id: uid(), mes: '2027-01', descricao: 'IPVA (EXEMPLO)', tipo: 'Despesa', valor: 1200 }
+    ],
+    lancamentos: [],
+    ferias: { '2027-07': true }
+  };
+  commit();
+}
+
+function zerar() {
+  if (!confirm('Apagar todos os dados (inclusive o patrimônio)? Faça um backup antes.')) return;
+  S = blank();
+  commit();
+}
+
+/* ---------- sincronização com o Google Drive (pasta privada do app, dados cifrados) ---------- */
+const SYNC_KEY = 'cf-sync', SYNC_ARQ = 'controle-financeiro.enc';
+const SYNC_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+const ssGet = k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
+const ssSet = (k, v) => { try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) {} };
+// clientId: do Google Cloud; arquivoId: não usado para busca; base: modificadoEm da última versão sincronizada
+let syncCfg = lsGet(SYNC_KEY, {});
+let syncEstado = '';
+let envioAgendado = null, sincronizando = false;
+const setSync = t => { syncEstado = t; const el = $('syncstatus'); if (el) el.textContent = t; };
+const agoraISO = () => new Date().toISOString();
+const tokenValido = () => !!ssGet('cf-token') && Date.now() < Number(ssGet('cf-exp') || 0);
+const redirectUri = () => location.origin + location.pathname;
+
+// Base64 de bytes (em blocos, para não estourar o limite de argumentos)
+const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+// Cifragem: senha -> PBKDF2 (SHA-256, 310 mil iterações) -> AES-GCM 256. Só o texto cifrado vai para o Drive.
+async function chaveDe(senha, salt) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(senha), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function cifrar(obj, senha) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await chaveDe(senha, salt), new TextEncoder().encode(JSON.stringify(obj)));
+  return JSON.stringify({ v: 1, salt: b64(salt), iv: b64(iv), data: b64(new Uint8Array(ct)) });
+}
+async function decifrar(texto, senha) {
+  const p = JSON.parse(texto);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(p.iv) }, await chaveDe(senha, unb64(p.salt)), unb64(p.data));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+// Login (OAuth implícito): volta para esta mesma página com o token no endereço.
+function conectarDrive() {
+  const id = (syncCfg.clientId || '').trim();
+  if (!id) return setSync('Salve o Client ID do Google Cloud primeiro.');
+  const senha = $('sync-senha').value;
+  if (senha.length < 6) return setSync('A senha de sincronização precisa ter pelo menos 6 caracteres.');
+  ssSet('cf-senha', senha);
+  if (tokenValido()) return sincronizar();
+  location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
+    client_id: id, redirect_uri: redirectUri(), response_type: 'token', scope: SYNC_SCOPE, include_granted_scopes: 'true'
+  });
+}
+function lerRetornoOAuth() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  const t = p.get('access_token');
+  if (!t) return;
+  ssSet('cf-token', t);
+  ssSet('cf-exp', String(Date.now() + (Number(p.get('expires_in')) || 3600) * 1000 - 60000));
+  history.replaceState(null, '', location.pathname + location.search);
+}
+function desconectarDrive() {
+  ssSet('cf-token', null); ssSet('cf-exp', null); ssSet('cf-senha', null);
+  clearTimeout(envioAgendado);
+  setSync('Desconectado. Os dados continuam salvos neste aparelho.');
+  render();
+}
+function salvarClientId(e) {
+  e.preventDefault();
+  syncCfg.clientId = $('sync-cid').value.trim();
+  lsSet(SYNC_KEY, syncCfg);
+  setSync('Client ID salvo.');
+  render();
+}
+
+// Chamadas à API do Drive (só o escopo da pasta privada do app)
+async function drive(url, opts = {}) {
+  if (!tokenValido()) throw new Error('sessão do Google expirou; conecte de novo');
+  const r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + ssGet('cf-token'), ...(opts.headers || {}) } });
+  if (r.status === 401) { ssSet('cf-token', null); throw new Error('sessão do Google expirou; conecte de novo'); }
+  if (!r.ok) throw new Error('o Drive respondeu ' + r.status);
+  return r;
+}
+async function acharArquivo() {
+  const q = encodeURIComponent(`name='${SYNC_ARQ}' and trashed=false`);
+  const j = await (await drive(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=files(id)`)).json();
+  return j.files[0] ? j.files[0].id : null;
+}
+async function gravarArquivo(texto, id) {
+  if (id) {
+    const r = await drive(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media&fields=id`, { method: 'PATCH', headers: { 'Content-Type': 'application/octet-stream' }, body: texto });
+    return r.json();
+  }
+  const b = 'cf' + Math.random().toString(36).slice(2);
+  const meta = JSON.stringify({ name: SYNC_ARQ, parents: ['appDataFolder'] });
+  const corpo = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${b}\r\nContent-Type: application/octet-stream\r\n\r\n${texto}\r\n--${b}--`;
+  const r = await drive('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${b}` }, body: corpo });
+  return r.json();
+}
+
+function aplicarRemoto(r, msg) {
+  S = Object.assign(blank(), r.dados);
+  S.modificadoEm = r.modificadoEm;
+  syncCfg.base = r.modificadoEm;
+  lsSet(SYNC_KEY, syncCfg);
+  salvar();
+  render();
+  setSync(msg);
+}
+
+// Regra: cada gravação local marca "modificadoEm" e o app guarda a última versão que viu do Drive (base).
+// Se o Drive mudou e este aparelho também mudou, pergunta qual versão manter.
+async function sincronizar() {
+  const senha = ssGet('cf-senha');
+  if (sincronizando) return;
+  if (!syncCfg.clientId) return setSync('Salve o Client ID do Google Cloud.');
+  if (!tokenValido()) return setSync('Conecte ao Google Drive.');
+  if (!senha) return setSync('Informe a senha de sincronização e conecte de novo.');
+  sincronizando = true;
+  setSync('Sincronizando…');
+  try {
+    const id = await acharArquivo();
+    let remoto = null;
+    if (id) {
+      const txt = await (await drive(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`)).text();
+      try { remoto = await decifrar(txt, senha); }
+      catch (e) { throw new Error('senha de sincronização incorreta (ou arquivo de outro uso)'); }
+    }
+    const base = syncCfg.base || '';
+    const sujo = (S.modificadoEm || '') !== base;
+    if (remoto && remoto.modificadoEm !== base) {
+      if (!sujo) return aplicarRemoto(remoto, 'Atualizado com alterações feitas no outro aparelho.');
+      const usarDrive = confirm('Há alterações no Drive feitas em outro aparelho e também alterações neste.\n\nOK = usar a versão do Drive (descarta as alterações deste aparelho).\nCancelar = enviar a versão deste aparelho (substitui a do Drive).');
+      if (usarDrive) return aplicarRemoto(remoto, 'Versão do Drive aplicada.');
+    }
+    if (remoto && !sujo) return setSync('Sincronizado às ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+    if (!S.modificadoEm) { S.modificadoEm = agoraISO(); salvar(); }
+    const meta = await gravarArquivo(await cifrar({ modificadoEm: S.modificadoEm, dados: S }, senha), id);
+    syncCfg.base = S.modificadoEm;
+    syncCfg.arquivoId = meta.id;
+    lsSet(SYNC_KEY, syncCfg);
+    setSync('Sincronizado às ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+  } catch (e) {
+    setSync('Não sincronizou: ' + e.message);
+  } finally {
+    sincronizando = false;
+  }
+}
+function agendarEnvio() {
+  if (!syncCfg.clientId || !ssGet('cf-senha') || !tokenValido()) return;
+  clearTimeout(envioAgendado);
+  envioAgendado = setTimeout(sincronizar, 1500);
+}
+
+function blocoSync() {
+  const conectado = tokenValido();
+  return `
+    <section class="card"><h2>Sincronização entre aparelhos (Google Drive)</h2>
+      <p class="muted">Os dados vão para uma pasta privada do app no seu Drive, cifrados com a sua senha. Use o mesmo Client ID e a mesma senha em todos os aparelhos.</p>
+      <form class="fields" onsubmit="salvarClientId(event)">
+        <label>Client ID do Google Cloud <input id="sync-cid" value="${esc(syncCfg.clientId || '')}" placeholder="xxxxx.apps.googleusercontent.com"></label>
+        <p class="muted">Endereço de retorno que deve estar cadastrado no Google Cloud: <code>${esc(redirectUri())}</code></p>
+        <div class="row"><button>Salvar Client ID</button></div>
+      </form>
+      <form class="fields" onsubmit="event.preventDefault();conectarDrive()">
+        <label>Senha de sincronização <input id="sync-senha" type="password" autocomplete="off" value="${esc(ssGet('cf-senha') || '')}"></label>
+        <div class="row">
+          <button>${conectado ? 'Sincronizar agora' : 'Conectar ao Google Drive'}</button>
+          ${conectado ? '<button type="button" class="ghost" onclick="desconectarDrive()">Desconectar</button>' : ''}
+        </div>
+      </form>
+      <p class="muted" id="syncstatus">${esc(syncEstado || (conectado ? 'Conectado.' : 'Não conectado.'))}</p>
+    </section>`;
+}
+
+$('fx').onchange = e => importarPlanilha(e.target);
+$('fj').onchange = e => importarJSON(e.target);
+lerRetornoOAuth();
+render();
+if (tokenValido() && ssGet('cf-senha') && syncCfg.clientId) sincronizar();
+</script>
+</body>
+</html>
