@@ -135,6 +135,23 @@ test('abatimento depois da última parcela: crédito único naquele mês', async
   assert.deepEqual(r.map(c2), [100, -300]);
 });
 
+/* ---------- ajuste manual na fatura ---------- */
+test('ajuste manual reduz só a fatura do cartão e do mês escolhidos, sem mexer nas parcelas', async () => {
+  const dados = {
+    config: { cartoes: ['Nubank', 'Itaú'] }, parcelados: [compra],
+    creditos: [
+      { id: 'c1', cartao: 'Nubank', mes: '2026-12', valor: 222.72, descricao: 'Pagamento antecipado' },
+      { id: 'c2', cartao: 'Nubank', mes: '2026-12', valor: 50, descricao: '' }]
+  };
+  const r = await cenario(dados, `[fatCartao('Nubank', '2026-11'), fatCartao('Nubank', '2026-12'), fatCartao('Nubank', '2027-01'),
+    fatCartao('Itaú', '2026-12'), execMes('2026-12'), valorParcela(S.parcelados[0])]`);
+  assert.deepEqual(r.map(c2), [100, -172.72, 100, 0, 100, 100]);
+  const b = await avaliar(pg, itens('2026-12', 'Nubank'));
+  assert.deepEqual(b.itens.map(i => [i.tipo, i.descricao, c2(i.valor)]),
+    [['Parcelado', 'Notebook', 100], ['Ajuste', 'Pagamento antecipado', -222.72], ['Ajuste', 'Ajuste manual', -50]]);
+  assert.equal(c2(b.total), -172.72);
+});
+
 /* ---------- executado ---------- */
 test('executado do mês e por categoria (pela data da compra, mesmo com "Próxima fatura")', async () => {
   const dados = {

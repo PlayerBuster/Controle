@@ -208,6 +208,26 @@ test('Parcelamentos: o mês desta parcela segue a data da compra, a fatura e o n
   assert.deepEqual(await avaliar(pg, `S.parcelados.map(p => [p.inicio, p.parcelas])`), [['2026-09', 12]]);
 });
 
+test('Parcelamentos: ajuste manual reduz a fatura, aparece na lista e pode ser excluído', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank', 'Mercado Pago'] }, parcelados: [
+    { id: 'p', dataCompra: '2026-10-01', cartao: 'Mercado Pago', descricao: 'Celular', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-10' }] });
+  await ir('parcelas');
+  const f = 'form[onsubmit="addCredito(event)"]';
+  await pg.selectOption(`${f} [name=cartao]`, 'Mercado Pago');
+  await pg.fill(`${f} [name=mes]`, '2026-10');
+  await pg.fill(`${f} [name=valor]`, '222.72');
+  await pg.fill(`${f} [name=descricao]`, 'Pagamento antecipado');
+  await pg.click(`${f} button`);
+  assert.deepEqual(await avaliar(pg, `S.creditos.map(x => [x.cartao, x.mes, x.valor, x.descricao])`),
+    [['Mercado Pago', '2026-10', 222.72, 'Pagamento antecipado']]);
+  assert.equal(Math.round(await avaliar(pg, `fatCartao('Mercado Pago', '2026-10')`) * 100) / 100, -122.72);
+  assert.deepEqual(await avaliar(pg, `S.parcelados.map(p => [p.parcelas, valorParcela(p)])`), [[12, 100]]);
+  assert.match(await pg.innerText('#conteudo'), /Pagamento antecipado/);
+  await pg.click('button[onclick^="excluir(\'creditos\'"]');
+  assert.deepEqual(await avaliar(pg, `S.creditos`), []);
+  assert.deepEqual(pg.erros, []);
+});
+
 test('Faturas: lista inclui meses antes da projeção com compras (até 12 meses) e abre no mês atual', async () => {
   await definirDados(pg, {
     config: { cartoes: ['Nubank'], primeiroMes: '2026-11' },

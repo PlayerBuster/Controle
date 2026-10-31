@@ -28,6 +28,9 @@ const DADOS = {
   estornos: [
     { id: 'e1', parcelaId: 'p3', tipo: 'Estorno', mes: '2027-02', valor: 360, descricao: 'Devolução parcial' },
     { id: 'e2', parcelaId: 'p1', tipo: 'Abatimento', mes: '2027-01', valor: 120, descricao: 'Desconto' }],
+  creditos: [
+    { id: 'c1', cartao: 'Nubank', mes: '2026-11', valor: 222.72, descricao: 'Pagamento antecipado' },
+    { id: 'c2', cartao: 'Itaú', mes: '2027-01', valor: 659.3, descricao: '' }],
   eventuais: [
     { id: 'v1', mes: '2026-12', descricao: '13º', tipo: 'Receita', valor: 3500 },
     { id: 'v2', mes: '2027-01', descricao: 'IPVA', tipo: 'Despesa', valor: 1300 },
@@ -119,7 +122,7 @@ test('exportar e importar a planilha devolve os mesmos dados', async () => {
       cartoes: n.config.cartoes, primeiroMes: n.config.primeiroMes, saldo: n.config.saldoConta,
       recorrentes: n.recorrentes.map(sem), parcelados: n.parcelados.map(sem), eventuais: n.eventuais.map(sem),
       lancamentos: n.lancamentos.map(sem), estornos: n.estornos.map(e => [n.parcelados.find(p => p.id === e.parcelaId).descricao, e.tipo, e.mes, e.valor]),
-      ferias: n.ferias, orcDez: n.orcamentoMeses['2026-12']
+      ferias: n.ferias, orcDez: n.orcamentoMeses['2026-12'], creditos: n.creditos.map(sem)
     };
   }, g);
   const semId = ({ id, ...x }) => x;
@@ -135,11 +138,14 @@ test('exportar e importar a planilha devolve os mesmos dados', async () => {
   assert.deepEqual(r.estornos, [['Geladeira', 'Estorno', '2027-02', 360], ['Celular', 'Abatimento', '2027-01', 120]]);
   assert.deepEqual(r.ferias, { '2027-07': true });
   assert.equal(r.orcDez.Lazer, 800);
+  assert.deepEqual(r.creditos, DADOS.creditos.map(semId));
 });
 
-test('faturas da planilha exportada respeitam "Próxima fatura"', async () => {
-  const v = await avaliar(pg, `[fatCartao('Nubank', '2026-10'), fatCartao('Nubank', '2026-11'), fatCartao('Itaú', '2026-12'), fatCartao('Itaú', '2027-02'), fatCartao('Itaú', '2027-03')]`);
+test('faturas da planilha exportada respeitam "Próxima fatura" e os ajustes manuais', async () => {
+  const v = await avaliar(pg, `[fatCartao('Nubank', '2026-10'), fatCartao('Nubank', '2026-11'), fatCartao('Itaú', '2026-12'),
+    fatCartao('Itaú', '2027-01'), fatCartao('Itaú', '2027-02'), fatCartao('Itaú', '2027-03')]`);
   // Nubank out: Celular 84,83 + Ração 102,02 + TotalPass 89,90 (Estadao só a partir de nov).
-  // Itaú: Geladeira 360 + Spotify 21,90 de dez a fev; em fev, estorno de 360.
-  assert.deepEqual(v.map(x => Math.round(x * 100) / 100), [276.75, 278.65, 381.9, 21.9, 360]);
+  // Nubank nov: Celular 84,83 + Ração 102,02 + Estadao 1,90 + TotalPass 89,90 − ajuste 222,72.
+  // Itaú: Geladeira 360 + Spotify 21,90 de dez a fev; em jan, ajuste de 659,30; em fev, estorno de 360.
+  assert.deepEqual(v.map(x => Math.round(x * 100) / 100), [276.75, 55.93, 381.9, -277.4, 21.9, 360]);
 });
