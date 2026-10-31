@@ -41,7 +41,14 @@ const DADOS = {
     { id: 'l1', data: '2026-11-02', descricao: 'Mercado', categoria: 'Alimentação', forma: 'Débito', cartao: '', valor: 412.35 },
     { id: 'l2', data: '2026-11-15', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 42 },
     { id: 'l3', data: '2026-11-30', descricao: 'Jantar', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 120, prox: true },
-    { id: 'l4', data: '2026-11-20', descricao: 'Remédio', categoria: 'Saúde', forma: 'Pix', cartao: '', valor: 20.5 }],
+    { id: 'l4', data: '2026-11-20', descricao: 'Remédio', categoria: 'Saúde', forma: 'Pix', cartao: '', valor: 20.5 },
+    { id: 'l5', data: '2026-12-03', descricao: 'Bolo', categoria: 'Lazer', forma: 'Dinheiro', cartao: '', valor: 35 },
+    { id: 'l6', data: '2026-12-10', descricao: 'Plano (Simulador)', categoria: 'Lazer', forma: 'Planejada', cartao: '', valor: 300 },
+    { id: 'l7', data: '2026-11-25', descricao: 'Sapato', categoria: 'Vestuário', forma: 'Cartão', cartao: 'Itaú', valor: 250 },
+    { id: 'l8', data: '2026-12-31', descricao: 'Ceia', categoria: 'Alimentação', forma: 'Cartão', cartao: 'Inter', valor: 1600, prox: true }],
+  movConta: [
+    { id: 'm1', data: '2026-11-05', descricao: 'Salário', tipo: 'Entrada', valor: 7000 },
+    { id: 'm2', data: '2026-11-10', descricao: 'Pagamento fatura Nubank', tipo: 'Saída', valor: 276.75 }],
   orcamento: { 'Alimentação': 1200, Lazer: 400, 'Saúde': 200, Cartões: 900 },
   orcamentoMeses: { '2026-12': { 'Alimentação': 1500, Lazer: 800, 'Saúde': 200 } },
   ferias: { '2027-07': true },
@@ -122,7 +129,7 @@ test('exportar e importar a planilha devolve os mesmos dados', async () => {
       cartoes: n.config.cartoes, primeiroMes: n.config.primeiroMes, saldo: n.config.saldoConta,
       recorrentes: n.recorrentes.map(sem), parcelados: n.parcelados.map(sem), eventuais: n.eventuais.map(sem),
       lancamentos: n.lancamentos.map(sem), estornos: n.estornos.map(e => [n.parcelados.find(p => p.id === e.parcelaId).descricao, e.tipo, e.mes, e.valor]),
-      ferias: n.ferias, orcDez: n.orcamentoMeses['2026-12'], creditos: n.creditos.map(sem)
+      ferias: n.ferias, orcDez: n.orcamentoMeses['2026-12'], creditos: n.creditos.map(sem), movConta: n.movConta.map(sem)
     };
   }, g);
   const semId = ({ id, ...x }) => x;
@@ -139,13 +146,15 @@ test('exportar e importar a planilha devolve os mesmos dados', async () => {
   assert.deepEqual(r.ferias, { '2027-07': true });
   assert.equal(r.orcDez.Lazer, 800);
   assert.deepEqual(r.creditos, DADOS.creditos.map(semId));
+  assert.deepEqual(r.movConta, DADOS.movConta.map(semId));
 });
 
 test('faturas da planilha exportada respeitam "Próxima fatura" e os ajustes manuais', async () => {
   const v = await avaliar(pg, `[fatCartao('Nubank', '2026-10'), fatCartao('Nubank', '2026-11'), fatCartao('Itaú', '2026-12'),
     fatCartao('Itaú', '2027-01'), fatCartao('Itaú', '2027-02'), fatCartao('Itaú', '2027-03')]`);
   // Nubank out: Celular 84,83 + Ração 102,02 + TotalPass 89,90 (Estadao só a partir de nov).
-  // Nubank nov: Celular 84,83 + Ração 102,02 + Estadao 1,90 + TotalPass 89,90 − ajuste 222,72.
+  // Nubank nov: Celular 84,83 + Ração 102,02 + Estadao 1,90 + TotalPass 89,90 + Lanche 42 − ajuste 222,72
+  // (o Jantar de 30/11 é "Próxima fatura": vai para dez).
   // Itaú: Geladeira 360 + Spotify 21,90 de dez a fev; em jan, ajuste de 659,30; em fev, estorno de 360.
-  assert.deepEqual(v.map(x => Math.round(x * 100) / 100), [276.75, 55.93, 381.9, -277.4, 21.9, 360]);
+  assert.deepEqual(v.map(x => Math.round(x * 100) / 100), [276.75, 97.93, 381.9, -277.4, 21.9, 360]);
 });

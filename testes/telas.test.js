@@ -3,7 +3,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { abrirApp, fecharNavegador, definirDados, avaliar } = require('./lib');
 
-const ABAS = ['resumo', 'mesatual', 'projecao', 'simulador', 'orcamento', 'lancamentos', 'recorrentes', 'parcelas',
+const ABAS = ['resumo', 'mesatual', 'projecao', 'simulador', 'orcamento', 'lancamentos', 'conta', 'recorrentes', 'parcelas',
   'faturas', 'eventuais', 'patrimonio', 'config'];
 
 let pg;
@@ -225,6 +225,234 @@ test('Parcelamentos: ajuste manual reduz a fatura, aparece na lista e pode ser e
   assert.match(await pg.innerText('#conteudo'), /Pagamento antecipado/);
   await pg.click('button[onclick^="excluir(\'creditos\'"]');
   assert.deepEqual(await avaliar(pg, `S.creditos`), []);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Editar: o formulário mostra os dados do item escolhido, não de uma edição anterior', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank'] },
+    lancamentos: [
+      { id: 'a', data: '2026-10-31', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 42 },
+      { id: 'b', data: '2026-10-20', descricao: 'Mercado', categoria: 'Alimentação', forma: 'Pix', cartao: '', valor: 100 }],
+    recorrentes: [
+      { id: 'r1', descricao: 'Netflix', grupo: 'Cartão', cartao: 'Nubank', categoria: 'Assinaturas', valor: 40, inicio: '2026-01-10', fim: '' },
+      { id: 'r2', descricao: 'Aluguel', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 2000, inicio: '2026-01-05', fim: '' }],
+    parcelados: [{ id: 'p', dataCompra: '2026-10-26', cartao: 'Nubank', descricao: 'Celular', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-10' }] });
+  // Rascunho de uma versão anterior do app, que antes sobrescrevia qualquer edição.
+  await pg.evaluate(() => localStorage.setItem('cf-rascunhos', JSON.stringify({ 'salvarLanc(event)': { descricao: 'Sobra antiga', valor: '1' } })));
+  await ir('lancamentos');
+  const ed = 'form[onsubmit="salvarLanc(event)"]';
+  // Começa a editar "Lanche", digita e cancela.
+  await pg.evaluate(() => editarLanc('lanc', 'a'));
+  assert.equal(await pg.inputValue(`${ed} [name=descricao]`), 'Lanche');
+  await pg.fill(`${ed} [name=descricao]`, 'Digitado e cancelado');
+  await pg.fill(`${ed} [name=valor]`, '999');
+  await pg.click(`${ed} button:has-text("Cancelar")`);
+  // Abre "Mercado": precisa mostrar os dados dele.
+  await pg.evaluate(() => editarLanc('lanc', 'b'));
+  assert.deepEqual([await pg.inputValue(`${ed} [name=descricao]`), await pg.inputValue(`${ed} [name=valor]`),
+    await pg.inputValue(`${ed} [name=forma]`), await pg.inputValue(`${ed} [name=data]`)], ['Mercado', '100', 'Pix', '2026-10-20']);
+  // Salva "Mercado" alterado; depois abre a compra parcelada (mesmo formulário de edição).
+  await pg.fill(`${ed} [name=descricao]`, 'Mercado do mês');
+  await pg.click(`${ed} button:not([type=button])`);
+  await pg.evaluate(() => editarLanc('parc', 'p'));
+  assert.deepEqual([await pg.inputValue(`${ed} [name=descricao]`), await pg.inputValue(`${ed} [name=valorTotal]`)], ['Celular', '1200']);
+  await pg.click(`${ed} button:has-text("Cancelar")`);
+  // Recorrentes: mesma situação.
+  await ir('recorrentes');
+  const er = 'form[onsubmit="salvarRec(event)"]';
+  await pg.evaluate(() => editarRec('r1'));
+  await pg.fill(`${er} [name=descricao]`, 'Digitado');
+  await pg.click(`${er} button:has-text("Cancelar")`);
+  await pg.evaluate(() => editarRec('r2'));
+  assert.deepEqual([await pg.inputValue(`${er} [name=descricao]`), await pg.inputValue(`${er} [name=valor]`)], ['Aluguel', '2000']);
+  assert.deepEqual(await avaliar(pg, `S.lancamentos.map(l => l.descricao)`), ['Lanche', 'Mercado do mês']);
+  assert.equal(await avaliar(pg, `'salvarLanc(event)' in JSON.parse(localStorage.getItem('cf-rascunhos') || '{}')`), false);
+});
+
+test('Parcelamentos: botão Editar abre a compra certa no formulário de edição', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank'] }, parcelados: [
+    { id: 'p1', dataCompra: '2026-10-26', cartao: 'Nubank', descricao: 'Celular', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-10' },
+    { id: 'p2', dataCompra: '2026-10-17', cartao: 'Nubank', descricao: 'Ração', categoria: 'Outros', valorTotal: 204.04, parcelas: 2, inicio: '2026-10' }] });
+  await ir('parcelas');
+  await pg.click(`button[onclick*="editarLanc('parc','p2')"]`);
+  const ed = 'form[onsubmit="salvarLanc(event)"]';
+  assert.deepEqual([await pg.inputValue(`${ed} [name=descricao]`), await pg.inputValue(`${ed} [name=parcelas]`), await pg.inputValue(`${ed} [name=valorTotal]`)],
+    ['Ração', '2', '204.04']);
+});
+
+test('Calculadora: o resultado vai para o campo de valor tocado por último', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank'] } });
+  await ir('lancamentos');
+  await pg.focus('#formLanc [name=valor]');
+  await pg.click('#calcBtn');
+  for (const t of ['4', '2', '+', '1', '5', ',', '5']) await pg.click(`#calc .teclas button:text-is("${t}")`);
+  assert.equal(await pg.innerText('#calcRes'), '= 57,5');
+  assert.match(await pg.innerText('#calcUsar'), /Usar em "Valor \(R\$\)"/);
+  await pg.click('#calcUsar');
+  assert.equal(await pg.inputValue('#formLanc [name=valor]'), '57.50');
+  assert.equal(await visivel('#calc'), false);
+  // Também aceita a conta digitada, e "=" deixa o resultado no visor para continuar.
+  await pg.check('#formLanc [name=parcelada]');
+  await pg.focus('#formLanc [name=valorParcela]');
+  await pg.click('#calcBtn');
+  await pg.click('#calc .teclas button:text-is("C")');
+  await pg.fill('#calcVisor', '1017,90/12');
+  await pg.press('#calcVisor', 'Enter');
+  assert.equal(await pg.inputValue('#calcVisor'), '84,83');
+  await pg.click('#calcUsar');
+  assert.equal(await pg.inputValue('#formLanc [name=valorParcela]'), '84.83');
+});
+
+test('Calculadora: sem campo tocado, usa o primeiro campo de valor da aba; sem campo, não deixa usar', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank'] } });
+  await pg.evaluate(() => { calcAlvo = null; calcFechar(); });
+  await ir('parcelas');
+  await pg.click('#calcBtn');
+  await pg.fill('#calcVisor', '100*3');
+  await pg.dispatchEvent('#calcVisor', 'input');
+  assert.match(await pg.innerText('#calcUsar'), /Valor total/);
+  await pg.click('#calcUsar');
+  assert.equal(await pg.inputValue('form[onsubmit="addParc(event)"] [name=valorTotal]'), '300.00');
+  await ir('resumo');
+  await pg.click('#calcBtn');
+  assert.equal(await pg.isDisabled('#calcUsar'), true);
+  await pg.click('#calc button:has-text("Fechar")');
+});
+
+test('Configurações: renomear cartão atualiza compras, recorrentes, lançamentos, ajustes e opções fixas', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank', 'MP'] },
+    parcelados: [{ id: 'p', dataCompra: '2026-10-01', cartao: 'MP', descricao: 'Celular', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-10' }],
+    recorrentes: [{ id: 'r', descricao: 'Spotify', grupo: 'Cartão', cartao: 'MP', categoria: 'Assinaturas', valor: 20, inicio: '2026-01-01', fim: '' }],
+    lancamentos: [{ id: 'l', data: '2026-10-05', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'MP', valor: 30 }],
+    creditos: [{ id: 'c', cartao: 'MP', mes: '2026-10', valor: 10, descricao: '' }] });
+  await pg.evaluate(() => { lancFixo = { forma: 'Cartão', cartao: 'MP', categoria: 'Lazer', fatura: '' }; localStorage.setItem('cf-lanc-fixo', JSON.stringify(lancFixo)); });
+  const antes = await avaliar(pg, `linhasFatura('2026-10').find(b => b.cartao === 'MP').total`);
+  await ir('config');
+  const f = 'form[onsubmit="renomearLista(event,\'cartoes\')"]';
+  await pg.selectOption(`${f} [name=antigo]`, 'MP');
+  await pg.fill(`${f} [name=novo]`, 'Mercado Pago');
+  await pg.click(`${f} button`);
+  const r = await avaliar(pg, `[S.config.cartoes, S.parcelados[0].cartao, S.recorrentes[0].cartao, S.lancamentos[0].cartao, S.creditos[0].cartao,
+    JSON.parse(localStorage.getItem('cf-lanc-fixo')).cartao, linhasFatura('2026-10').find(b => b.cartao === 'Mercado Pago').total]`);
+  assert.deepEqual(r, [['Nubank', 'Mercado Pago'], 'Mercado Pago', 'Mercado Pago', 'Mercado Pago', 'Mercado Pago', 'Mercado Pago', antes]);
+  // Nome repetido (sem diferenciar maiúsculas) é recusado.
+  await pg.selectOption(`${f} [name=antigo]`, 'Mercado Pago');
+  await pg.fill(`${f} [name=novo]`, 'nubank');
+  await pg.click(`${f} button`);
+  assert.deepEqual(await avaliar(pg, `S.config.cartoes`), ['Nubank', 'Mercado Pago']);
+  assert.match(pg.alertas[pg.alertas.length - 1], /Já existe/);
+  await pg.evaluate(() => { lancFixo = null; localStorage.removeItem('cf-lanc-fixo'); });
+});
+
+test('Configurações: renomear categoria atualiza itens e orçamentos (padrão e por mês)', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank'], categorias: ['Lazer', 'PET', 'Outros'] },
+    parcelados: [{ id: 'p', dataCompra: '2026-10-01', cartao: 'Nubank', descricao: 'Ração', categoria: 'PET', valorTotal: 200, parcelas: 2, inicio: '2026-10' }],
+    recorrentes: [{ id: 'r', descricao: 'Plano', grupo: 'Fixo', cartao: '', categoria: 'PET', valor: 50, inicio: '2026-01-01', fim: '' }],
+    lancamentos: [{ id: 'l', data: '2026-10-05', descricao: 'Remédio', categoria: 'PET', forma: 'Pix', cartao: '', valor: 30 }],
+    orcamento: { PET: 300, Lazer: 100 }, orcamentoMeses: { '2026-10': { PET: 400 } } });
+  const antes = await avaliar(pg, `[execCat('PET', '2026-10'), totalOrc('2026-10')]`);
+  await ir('config');
+  const f = 'form[onsubmit="renomearLista(event,\'categorias\')"]';
+  await pg.selectOption(`${f} [name=antigo]`, 'PET');
+  await pg.fill(`${f} [name=novo]`, 'Pets');
+  await pg.click(`${f} button`);
+  const r = await avaliar(pg, `[S.config.categorias, S.parcelados[0].categoria, S.recorrentes[0].categoria, S.lancamentos[0].categoria,
+    S.orcamento, S.orcamentoMeses['2026-10'], execCat('Pets', '2026-10'), totalOrc('2026-10')]`);
+  assert.deepEqual(r, [['Lazer', 'Pets', 'Outros'], 'Pets', 'Pets', 'Pets', { Lazer: 100, Pets: 300 }, { Pets: 400 }, antes[0], antes[1]]);
+});
+
+test('Faturas: faixa mostra o mês escolhido e as setas trocam de mês', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank'], primeiroMes: '2026-11' } });
+  await pg.evaluate(() => { faturaMes = null; });
+  await ir('faturas');
+  const atual = await avaliar(pg, `faturaMes`);
+  const txt = await pg.innerText('#mesFatura');
+  assert.match(txt, new RegExp(await avaliar(pg, `mNome(faturaMes).replace('/', '\\\\/')`)));
+  assert.match(txt, await avaliar(pg, `mIdx(faturaMes) === mIdx(mkOf(hoje()))`) ? /mês atual/ : /meses|próximo|passado/);
+  await pg.click('#mesFatura button[aria-label="Próximo mês"]');
+  assert.equal(await avaliar(pg, `faturaMes`), await avaliar(pg, `addM('${atual}', 1)`));
+  assert.equal(await pg.inputValue('select[name=mes]'), await avaliar(pg, `faturaMes`));
+  await pg.click('#mesFatura button[aria-label="Mês anterior"]');
+  assert.equal(await avaliar(pg, `faturaMes`), atual);
+  // No primeiro mês da lista, a seta de voltar fica desativada.
+  await pg.evaluate(() => { faturaMes = mesesFatura()[0]; render(); });
+  assert.equal(await pg.isDisabled('#mesFatura button[aria-label="Mês anterior"]'), true);
+  assert.deepEqual(await avaliar(pg, `[mesRelativo(mkOf(hoje())), mesRelativo(addM(mkOf(hoje()), 1)), mesRelativo(addM(mkOf(hoje()), -1)), mesRelativo(addM(mkOf(hoje()), 3)), mesRelativo(addM(mkOf(hoje()), -2))]`),
+    ['mês atual', 'próximo mês', 'mês passado', 'daqui a 3 meses', 'há 2 meses']);
+});
+
+test('Lançamentos: filtros por texto, mês, categoria, cartão/forma e tipo', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank', 'Mercado Pago'] },
+    lancamentos: [
+      { id: 'a', data: '2026-10-31', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 42 },
+      { id: 'b', data: '2026-10-20', descricao: 'Mercado São João', categoria: 'Alimentação', forma: 'Pix', cartao: '', valor: 100 },
+      { id: 'c', data: '2026-09-10', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'Mercado Pago', valor: 20 }],
+    parcelados: [{ id: 'p', dataCompra: '2026-10-26', cartao: 'Mercado Pago', descricao: 'Celular', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-10' }] });
+  await pg.evaluate(() => limparFiltroLanc());
+  await ir('lancamentos');
+  const linhas = () => pg.$$eval('#conteudo table tbody tr td:nth-child(2)', tds => tds.map(t => t.innerText.replace(/\s*\(.*\)$/, '')));
+  assert.deepEqual(await linhas(), ['Lanche', 'Celular', 'Mercado São João', 'Lanche']);
+  // Busca ignora acentos e maiúsculas.
+  await pg.fill('#fBusca', 'sao joao');
+  assert.deepEqual(await linhas(), ['Mercado São João']);
+  assert.equal(await pg.evaluate(() => document.activeElement.id), 'fBusca', 'o cursor deve continuar na busca');
+  await pg.fill('#fBusca', 'lanche');
+  assert.deepEqual(await linhas(), ['Lanche', 'Lanche']);
+  await pg.selectOption('#fPag', 'Cartão:Mercado Pago');
+  assert.deepEqual(await linhas(), ['Lanche']);
+  assert.match(await pg.innerText('#conteudo h2:has-text("Lançamentos")'), /R\$\s*20,00.*\(1 de 4\)/);
+  await pg.click('button:has-text("Limpar filtros")');
+  assert.equal((await linhas()).length, 4);
+  await pg.selectOption('#fTipo', 'parc');
+  assert.deepEqual(await linhas(), ['Celular']);
+  await pg.selectOption('#fTipo', 'avulso');
+  await pg.selectOption('#fCat', 'Lazer');
+  await pg.fill('#fMes', '2026-10');
+  await pg.dispatchEvent('#fMes', 'change');
+  assert.deepEqual(await linhas(), ['Lanche']);
+  await pg.selectOption('#fPag', 'Pix');
+  assert.match(await pg.innerText('#conteudo table tbody'), /Nenhum lançamento/);
+  await pg.click('button:has-text("Limpar filtros")');
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Conta: gasto em Pix sai da conta sozinho; no cartão, não; entradas manuais e extrato', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank'], saldoConta: 1000 } });
+  await ir('lancamentos');
+  const f = '#formLanc';
+  const lancar = async (descricao, forma, valor) => {
+    await pg.fill(`${f} [name=data]`, '2020-01-10');
+    await pg.fill(`${f} [name=descricao]`, descricao);
+    await pg.selectOption(`${f} [name=forma]`, forma);
+    if (forma === 'Cartão') await pg.selectOption(`${f} [name=cartao]`, 'Nubank');
+    await pg.fill(`${f} [name=valor]`, valor);
+    await pg.click(`${f} button:not([type=button])`);
+  };
+  await lancar('Feira', 'Pix', '80');
+  await lancar('Lanche', 'Cartão', '42');
+  await ir('conta');
+  assert.equal(await avaliar(pg, `saldoContaEm(hoje())`), 920);
+  let txt = await pg.innerText('#conteudo');
+  assert.match(txt, /Feira/);
+  assert.doesNotMatch(txt, /Lanche/);
+  const fm = 'form[onsubmit="addMov(event)"]';
+  await pg.fill(`${fm} [name=data]`, '2020-01-05');
+  await pg.fill(`${fm} [name=descricao]`, 'Salário');
+  await pg.selectOption(`${fm} [name=tipo]`, 'Entrada');
+  await pg.fill(`${fm} [name=valor]`, '3000');
+  await pg.click(`${fm} button`);
+  assert.equal(await avaliar(pg, `saldoContaEm(hoje())`), 3920);
+  txt = await pg.innerText('#conteudo');
+  assert.match(txt, /Saldo em conta hoje\s*R\$\s*3\.920,00/i);
+  // Extrato do mais novo para o mais antigo, com o saldo depois de cada movimentação.
+  const linhas = await pg.$$eval('#conteudo table tbody tr', trs => trs.map(t => [t.cells[1].innerText, t.cells[4].innerText.replace(/\s/g, ' ')]));
+  assert.deepEqual(linhas, [['Feira', 'R$ 3.920,00'], ['Salário', 'R$ 4.000,00']]);
+  // Saldo inicial editável na própria aba.
+  await pg.fill('form[onsubmit="salvarSaldoInicial(event)"] [name=saldo]', '500');
+  await pg.click('form[onsubmit="salvarSaldoInicial(event)"] button');
+  assert.equal(await avaliar(pg, `[S.config.saldoConta, saldoContaEm(hoje())]`).then(JSON.stringify), JSON.stringify([500, 3420]));
+  await pg.click(`button[onclick^="excluir('movConta'"]`);
+  assert.equal(await avaliar(pg, `saldoContaEm(hoje())`), 420);
   assert.deepEqual(pg.erros, []);
 });
 
