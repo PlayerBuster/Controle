@@ -4,7 +4,7 @@
 bash testes/rodar_testes.sh
 ```
 
-O script roda os três arquivos abaixo e termina com "TODOS OS TESTES PASSARAM" ou "HÁ TESTES FALHANDO". O `publicar.sh` roda este script e não publica nada se algum teste falhar.
+O script roda os quatro arquivos `.test.js` abaixo e termina com "TODOS OS TESTES PASSARAM" ou "HÁ TESTES FALHANDO". O `publicar.sh` roda este script e não publica nada se algum teste falhar.
 
 Para rodar só um arquivo, use `node --test --test-reporter=spec testes/calculos.test.js`.
 
@@ -23,6 +23,7 @@ O arquivo testado é escolhido nesta ordem: o caminho em `CF_APP`, se houver; de
 | `calculos.test.js` | Datas, parcelas, recorrentes (incluindo "Próxima fatura"), fatura prevista e real, estornos e abatimentos, executado por mês e por categoria, orçamento, composição do mês e projeção com férias. Os valores esperados foram calculados à mão. |
 | `planilha.test.js` | Gera a planilha .xlsx com dados que usam todos os recursos e manda o LibreOffice recalculá-la. Depois compara **cada fórmula** (cerca de 3.000) com o valor que o app gravou. Também confere que exportar seguido de importar devolve os mesmos dados. |
 | `telas.test.js` | Todas as abas abrem sem erro, no computador e no celular (375px, sem rolagem lateral). Testa os formulários de Lançamentos, Recorrentes e Parcelamentos: campo Fatura, edição, "Alterar a partir de" e "Fixar estas opções". Testa também a lista de meses e o modo individual da aba Faturas. |
+| `sw.test.js` | Service worker do app instalado. Um servidor local imita o GitHub Pages, inclusive o cache de 10 minutos. O teste confere que uma versão publicada aparece na abertura seguinte e que o app abre sem internet. Com `CF_SW`, dá para testar outro `sw.js`. |
 | `lib.js` | Base comum: abre o app, troca os dados (`definirDados`), avalia expressões na página e prepara o LibreOffice. |
 
 ## Detalhes
