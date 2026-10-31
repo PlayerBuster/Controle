@@ -19,7 +19,7 @@ body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;b
 header{background:var(--header);color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
 header h1{font-size:18px;margin:0}
 .abas{display:flex;gap:6px;overflow-x:auto;padding:10px 20px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2}
-main{max-width:1100px;margin:0 auto;padding:20px;display:grid;gap:16px}
+main{max-width:1100px;margin:0 auto;padding:20px 20px 84px;display:grid;gap:16px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
 .card h2{font-size:13px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
@@ -35,7 +35,7 @@ button.small{padding:3px 9px;font-size:13px}
 input,select{font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;width:100%;background:var(--card);color:var(--ink)}
 input[type=checkbox]{width:auto}
 label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
-form.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}
+form.fields,.filtros{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}
 form.fields button{height:38px}
 .scroll{overflow-x:auto}
 table{width:100%;border-collapse:collapse}
@@ -57,9 +57,24 @@ details summary{list-style:none}
 details summary::-webkit-details-marker{display:none}
 .aviso{background:var(--aviso);border:1px solid #e0a100;border-radius:10px;padding:10px 14px;margin:12px 20px 0;display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}
 .aviso button{background:#e0a100}
-@media(max-width:600px){th,td{font-size:13px}main{padding:12px}header{padding:12px 14px}header h1{width:100%}header .row{width:100%}header .row button{flex:1 1 auto;padding:8px 10px}form.fields{grid-template-columns:1fr 1fr}.card{padding:14px}.aviso{margin:10px 12px 0}}
-@media(max-width:380px){form.fields{grid-template-columns:1fr}}
-@media print{header,.abas,#aviso,.aviso,form,button,.row{display:none!important}body{background:#fff}main{max-width:none;padding:0}.card{break-inside:avoid;border:1px solid #999;box-shadow:none}}
+/* Indicador do mês na aba Faturas: fica visível abaixo da barra de abas ao rolar a página */
+.mes-fatura{position:sticky;top:var(--abas-h,52px);z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--accent);color:#fff;border-radius:12px;padding:8px 10px;box-shadow:0 2px 8px rgba(0,0,0,.18)}
+.mes-fatura strong{font-size:17px}
+.mes-fatura .rel{font-size:13px;opacity:.9}
+.mes-fatura button{background:rgba(255,255,255,.18);font-size:18px;line-height:1;padding:6px 12px}
+.mes-fatura button:disabled{opacity:.35;cursor:default}
+/* Calculadora flutuante */
+.calc-fab{position:fixed;right:16px;bottom:16px;z-index:5;width:52px;height:52px;border-radius:50%;font-size:24px;padding:0;box-shadow:0 3px 12px rgba(0,0,0,.3)}
+.calc{position:fixed;right:16px;bottom:80px;z-index:6;width:min(300px,calc(100vw - 32px));background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;box-shadow:0 6px 24px rgba(0,0,0,.3);display:grid;gap:8px}
+.calc .visor{font-size:20px;text-align:right;font-variant-numeric:tabular-nums}
+.calc .res{text-align:right;color:var(--muted);font-size:14px;min-height:18px}
+.calc .teclas{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.calc .teclas button{padding:10px 0;font-size:17px;background:var(--bg);color:var(--ink);border:1px solid var(--line)}
+.calc .teclas button.op{background:var(--line)}
+.calc .teclas button.igual{background:var(--accent);color:#fff;border-color:var(--accent)}
+@media(max-width:600px){th,td{font-size:13px}main{padding:12px}header{padding:12px 14px}header h1{width:100%}header .row{width:100%}header .row button{flex:1 1 auto;padding:8px 10px}form.fields,.filtros{grid-template-columns:1fr 1fr}.card{padding:14px}main{padding-bottom:84px}.aviso{margin:10px 12px 0}}
+@media(max-width:380px){form.fields,.filtros{grid-template-columns:1fr}}
+@media print{header,.abas,#aviso,.aviso,form,button,.row,.calc,.mes-fatura{display:none!important}body{background:#fff}main{max-width:none;padding:0}.card{break-inside:avoid;border:1px solid #999;box-shadow:none}}
 </style>
 </head>
 <body>
@@ -77,6 +92,8 @@ details summary::-webkit-details-marker{display:none}
 <div id="aviso"></div>
 <nav class="abas" id="abas"></nav>
 <main id="conteudo"></main>
+<button class="calc-fab" id="calcBtn" onclick="calcAbrir()" aria-label="Calculadora" title="Calculadora">🧮</button>
+<div class="calc" id="calc" hidden></div>
 <input type="file" id="fx" accept=".xlsx,.xls" hidden>
 <input type="file" id="fj" accept=".json,application/json" hidden>
 
@@ -122,6 +139,7 @@ function blank() {
     parcelados: [],
     estornos: [],
     creditos: [],
+    movConta: [],
     eventuais: [],
     lancamentos: [],
     ferias: {},
@@ -202,14 +220,31 @@ const parcDe = e => S.parcelados.find(p => p.id === e.parcelaId);
 const mesFatLanc = l => (l.prox ? addM(mkOf(l.data), 1) : mkOf(l.data));
 const recNaFatura = (r, m) => ativo(r, r.prox ? addM(m, -1) : m);
 // Ajustes manuais na fatura (pagamento antecipado, reembolso, bônus): reduzem a fatura do cartão
-// naquele mês, sem alterar parcelas nem o executado por categoria.
+// naquele mês, sem alterar parcelas nem o gasto por categoria.
 const creditosMes = (c, m) => (S.creditos || []).filter(x => x.cartao === c && x.mes === m);
+
+/* Regra dos lançamentos: o app é pensado para quem usa o cartão de crédito como forma principal.
+   - No cartão: valor a pagar. Entra na fatura (mês da compra ou o seguinte, com "Próxima fatura")
+     e só sai do saldo quando a fatura é paga.
+   - Débito, Pix e Dinheiro: executado. Sai da conta na data (aba Conta).
+   - Boleto e Outros: pagos no mês da data, mas não mexem na aba Conta.
+   - Planejada (criada pelo Simulador): já está nas despesas eventuais; não entra de novo. */
+const FORMAS_CONTA = ['Débito', 'Pix', 'Dinheiro'];
+const noCartao = l => l.forma === 'Cartão' && !!l.cartao;
+const avulsoConta = l => l.forma !== 'Planejada'; // avulso que conta como gasto no mês (exclui os do Simulador)
+const aVista = l => !noCartao(l) && avulsoConta(l);
 const fatCartao = (c, m) =>
   S.parcelados.filter(p => p.cartao === c && parcelaAtiva(p, m)).reduce((a, p) => a + valorParcela(p), 0) +
-  S.recorrentes.filter(r => r.grupo === 'Cartão' && r.cartao === c && recNaFatura(r, m)).reduce((a, r) => a + r.valor, 0) -
+  S.recorrentes.filter(r => r.grupo === 'Cartão' && r.cartao === c && recNaFatura(r, m)).reduce((a, r) => a + r.valor, 0) +
+  S.lancamentos.filter(l => noCartao(l) && l.cartao === c && mesFatLanc(l) === m).reduce((a, l) => a + l.valor, 0) -
   somaAjustes(m, e => parcDe(e).cartao === c) -
   creditosMes(c, m).reduce((a, x) => a + x.valor, 0);
 const faturaTotal = m => S.config.cartoes.reduce((a, c) => a + fatCartao(c, m), 0);
+// Gastos à vista do mês (pela data): Débito, Pix, Dinheiro, Boleto e Outros.
+const aVistaMes = m => S.lancamentos.filter(l => aVista(l) && mkOf(l.data) === m).reduce((a, l) => a + l.valor, 0);
+// Pago (executado): só o que saiu da conta (Débito, Pix, Dinheiro).
+const pagoMes = m => S.lancamentos.filter(l => FORMAS_CONTA.includes(l.forma) && mkOf(l.data) === m).reduce((a, l) => a + l.valor, 0);
+// Gasto lançado no mês (cartão + à vista + parcelas − estornos): quanto do orçamento já foi usado.
 const execMes = m =>
   S.lancamentos.filter(l => mkOf(l.data) === m).reduce((a, l) => a + l.valor, 0) +
   S.parcelados.filter(p => parcelaAtiva(p, m)).reduce((a, p) => a + valorParcela(p), 0) -
@@ -224,12 +259,34 @@ const totalOrc = (m = S.config.mesRef) => {
   const o = orcEfetivo(m);
   return S.config.categorias.reduce((a, c) => a + (Number(o[c]) || 0), 0);
 };
+// Orçamento que ainda falta gastar: por categoria, o orçado menos os gastos avulsos já lançados no mês
+// (nunca negativo). Os avulsos já entram na fatura ou nos gastos à vista; assim nada é contado duas vezes.
+const avulsosCat = (c, m) => S.lancamentos.filter(l => avulsoConta(l) && l.categoria === c && mkOf(l.data) === m).reduce((a, l) => a + l.valor, 0);
+const orcRestante = m => {
+  const o = orcEfetivo(m);
+  return S.config.categorias.reduce((a, c) => a + Math.max(0, (Number(o[c]) || 0) - avulsosCat(c, m)), 0);
+};
 
 function mesBase(m) {
   const rf = sumRec('Receita', m), re = sumEv('Receita', m), ef = sumRec('Fixo', m);
-  const fat = faturaTotal(m), ed = sumEv('Despesa', m), ov = totalOrc(m);
-  return { rf, re, rt: rf + re, ef, fat, ed, ov, I: ef + fat + ed + ov };
+  const fat = faturaTotal(m), av = aVistaMes(m), ed = sumEv('Despesa', m), ov = orcRestante(m);
+  return { rf, re, rt: rf + re, ef, fat, av, ed, ov, I: ef + fat + av + ed + ov };
 }
+
+// Aba Conta: extrato com saldo inicial, gastos em Débito/Pix/Dinheiro (saem sozinhos) e movimentações manuais.
+function extratoConta() {
+  const itens = [
+    ...S.lancamentos.filter(l => FORMAS_CONTA.includes(l.forma)).map(l => ({
+      id: l.id, origem: 'lanc', data: l.data, descricao: l.descricao, detalhe: l.forma, valor: -l.valor })),
+    ...(S.movConta || []).map(x => ({
+      id: x.id, origem: 'mov', data: x.data, descricao: x.descricao, detalhe: x.tipo, valor: x.tipo === 'Entrada' ? x.valor : -x.valor }))
+  ].sort((a, b) => a.data.localeCompare(b.data) || (a.origem === 'mov' ? -1 : 1));
+  let saldo = Number(S.config.saldoConta) || 0;
+  itens.forEach(i => { saldo += i.valor; i.saldo = saldo; });
+  return itens;
+}
+const saldoContaEm = data => (Number(S.config.saldoConta) || 0) +
+  extratoConta().filter(i => i.data <= data).reduce((a, i) => a + i.valor, 0);
 
 function projecao(n) {
   const base = S.config.primeiroMes;
@@ -752,7 +809,7 @@ V.projecao = () => {
     </section>
     <section class="card"><h2>Comparativo por período</h2><div class="scroll"><table>
       <thead><tr><th>Período</th><th class="num">Receitas</th><th class="num">Despesas</th><th class="num">Saldo</th>
-        <th class="num">Saldo acumulado</th><th class="num">Executado</th><th class="num">Previsto − executado</th></tr></thead>
+        <th class="num">Saldo acumulado</th><th class="num">Gasto lançado</th><th class="num">Previsto − lançado</th></tr></thead>
       <tbody>${linhas}</tbody>
     </table></div></section>
     <details class="card" ontoggle="detalheAberto = this.open" ${detalheAberto ? 'open' : ''}>
@@ -799,19 +856,21 @@ V.mesatual = () => {
     <section class="grid">
       ${card('Dia do mês', `${dia} de ${diasMes}`, `${Math.round(dia / diasMes * 100)}% do mês decorrido`)}
       ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
-      ${card('Despesas previstas', brl(b.I), `Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · eventuais ${brl(b.ed)} · orçamento ${brl(b.ov)}`, 'neg')}
-      ${card('Executado até agora', brl(exec), `${Math.round(exec / Math.max(b.I, 1) * 100)}% das despesas previstas`)}
-      ${card('Saldo realizado', brl(b.rt - exec), 'Receita prevista menos executado', b.rt - exec < 0 ? 'neg' : 'pos')}
+      ${card('Despesas previstas', brl(b.I), despesasTxt(b), 'neg')}
+      ${card('Gasto lançado no mês', brl(exec), `No cartão (a pagar) ${brl(exec - aVistaMes(m))} · à vista ${brl(aVistaMes(m))} · ${Math.round(exec / Math.max(b.I, 1) * 100)}% das despesas previstas`)}
+      ${card('Saldo em conta hoje', brl(saldoContaEm(hoje())), `Pago no Débito, Pix e Dinheiro no mês: ${brl(pagoMes(m))} · veja a aba Conta`, saldoContaEm(hoje()) < 0 ? 'neg' : 'pos')}
     </section>
     <section class="grid">
       ${gauge(sc.score, `Aderência ao orçado · ${mNome(m)}`, sub)}
-      <section class="card"><h2>Orçado x executado por categoria</h2>${barras}</section>
+      <section class="card"><h2>Orçado x gasto por categoria</h2>${barras}</section>
     </section>
     <section class="card"><h2>Lançamentos do mês</h2><div class="scroll"><table>
       <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Forma / parcela</th><th class="num">Valor</th></tr></thead>
       <tbody>${linhas}</tbody>
     </table></div></section>`;
 };
+
+const despesasTxt = b => `Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · à vista ${brl(b.av)} · eventuais ${brl(b.ed)} · orçamento restante ${brl(b.ov)}`;
 
 V.resumo = () => {
   const m = S.config.mesRef;
@@ -827,9 +886,9 @@ V.resumo = () => {
     <section class="grid">
       ${card('Mês de referência', mNome(m), 'Altere em Configurações')}
       ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
-      ${card('Despesas previstas', brl(b.I), `Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · eventuais ${brl(b.ed)} · orçamento ${brl(b.ov)}`, 'neg')}
-      ${card('Executado no mês', brl(exec), `Diferença para o previsto: ${brl(b.I - exec)}`)}
-      ${card('Saldo projetado em 12 meses', brl(proj[11].acum), `Saldo da conta hoje: ${brl(S.config.saldoConta)}`, proj[11].acum < 0 ? 'neg' : 'pos')}
+      ${card('Despesas previstas', brl(b.I), despesasTxt(b), 'neg')}
+      ${card('Gasto lançado no mês', brl(exec), `No cartão (a pagar) ${brl(exec - aVistaMes(m))} · à vista ${brl(aVistaMes(m))}`)}
+      ${card('Saldo projetado em 12 meses', brl(proj[11].acum), `Saldo em conta hoje: ${brl(saldoContaEm(hoje()))}`, proj[11].acum < 0 ? 'neg' : 'pos')}
       ${card('Saldo projetado em 36 meses', brl(proj[35].acum), `Saldo acumulado ao fim do período`, proj[35].acum < 0 ? 'neg' : 'pos')}
     </section>
     <section class="card"><h2>Faturas previstas do mês por cartão</h2>
@@ -846,7 +905,7 @@ function tabelaDetalhada(rows) {
   const linhas = rows.map(r => `<tr>
       <td>${mNome(r.m)}</td>
       <td class="num">${brl(r.rf)}</td><td class="num">${brl(r.re)}</td><td class="num">${brl(r.rt)}</td>
-      <td class="num">${brl(r.ef)}</td><td class="num">${brl(r.fat)}</td><td class="num">${brl(r.ed)}</td>
+      <td class="num">${brl(r.ef)}</td><td class="num">${brl(r.fat)}</td><td class="num">${brl(r.av)}</td><td class="num">${brl(r.ed)}</td>
       <td class="num">${brl(r.ov)}</td><td class="num">${brl(r.I)}</td>
       <td style="text-align:center"><input type="checkbox" ${r.ferias ? 'checked' : ''} onchange="marcarFerias('${r.m}', this.checked)"></td>
       <td class="num">${brl(r.adj)}</td><td class="num">${brl(r.L)}</td>
@@ -858,13 +917,14 @@ function tabelaDetalhada(rows) {
     <section class="card">
       <h2>Projeção mês a mês (36 meses)</h2>
       <p class="muted">Marque "Férias" no mês em que o orçamento paga também o mês seguinte. O mês seguinte fica zerado e a despesa cai no mês marcado.</p>
+      <p class="muted">Faturas incluem os gastos lançados no cartão (pagos quando a fatura vence). À vista: Débito, Pix, Dinheiro, Boleto e Outros. Orçamento restante: o orçado de cada categoria menos o que já foi lançado nela no mês, para não contar duas vezes.</p>
       <div class="scroll"><table>
         <thead><tr>
           <th>Mês</th><th class="num">Receitas fixas</th><th class="num">Receitas eventuais</th><th class="num">Total receitas</th>
-          <th class="num">Despesas fixas</th><th class="num">Faturas</th><th class="num">Despesas eventuais</th>
-          <th class="num">Orçamento variável</th><th class="num">Base do mês</th><th>Férias</th>
+          <th class="num">Despesas fixas</th><th class="num">Faturas</th><th class="num">À vista</th><th class="num">Despesas eventuais</th>
+          <th class="num">Orçamento restante</th><th class="num">Base do mês</th><th>Férias</th>
           <th class="num">Ajuste férias</th><th class="num">Despesas totais</th><th class="num">Saldo do mês</th>
-          <th class="num">Saldo acumulado</th><th class="num">Executado</th><th class="num">Previsto − executado</th>
+          <th class="num">Saldo acumulado</th><th class="num">Gasto lançado</th><th class="num">Previsto − lançado</th>
         </tr></thead>
         <tbody>${linhas}</tbody>
       </table></div>
@@ -913,11 +973,12 @@ V.orcamento = () => {
         <button>Copiar orçamento</button>
       </form>
       <div class="scroll"><table>
-        <thead><tr><th>Categoria</th><th class="num">Orçamento mensal</th><th class="num">Executado</th><th class="num">Diferença</th><th>Uso</th></tr></thead>
+        <thead><tr><th>Categoria</th><th class="num">Orçamento mensal</th><th class="num">Gasto lançado</th><th class="num">Diferença</th><th>Uso</th></tr></thead>
         <tbody>${linhaCartoes}${linhas}</tbody>
         <tfoot><tr><th>Total</th><th class="num">${brl(totalOrc(m))}</th><th class="num">${brl(execTot)}</th><th class="num">${brl(totalOrc(m) - execTot)}</th><th></th></tr></tfoot>
       </table></div>
       <p class="muted">A linha ${CARTOES} mostra as faturas de todos os cartões em um único ponto. Ela não entra no total variável nem nas pontuações por categoria, porque as faturas já estão na projeção.</p>
+      <p class="muted">Gasto lançado: tudo o que foi lançado na categoria no mês, no cartão (a pagar) ou à vista. Na projeção, só entra o orçamento que ainda falta gastar, porque o que já foi lançado está nas faturas ou nos gastos à vista.</p>
     </section>`;
 };
 
@@ -973,7 +1034,7 @@ function formEdicaoLanc() {
   if (tipo === 'lanc') {
     const it = S.lancamentos.find(x => x.id === lancEdit.id);
     if (!it) { lancEdit = null; return ''; }
-    return `<section class="card"><h2>Editar gasto executado</h2>
+    return `<section class="card"><h2>Editar lançamento</h2>
       <form class="fields" onsubmit="salvarLanc(event)">
         <input type="hidden" name="tipo" value="lanc">
         <label>Data<input type="date" name="data" value="${esc(it.data)}" required></label>
@@ -1002,7 +1063,7 @@ function formEdicaoLanc() {
       <button>Salvar alterações</button>
       <button type="button" class="small" onclick="cancelarLanc()">Cancelar</button>
     </form>
-    <p class="muted" style="margin-top:10px">Alterar a 1ª parcela ou o total muda as faturas e o executado de todos os meses da compra.</p>
+    <p class="muted" style="margin-top:10px">Alterar a 1ª parcela ou o total muda as faturas e o gasto de todos os meses da compra.</p>
   </section>`;
 }
 
@@ -1041,22 +1102,36 @@ function salvarLanc(e) {
   commit();
 }
 
+// Filtros da lista de lançamentos (o mês fica em filtroMes). pag: 'Cartão:<nome>' ou a forma de pagamento.
+let filtroLanc = { texto: '', categoria: '', pag: '', tipo: '' };
+const semAcento = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+function limparFiltroLanc() { filtroLanc = { texto: '', categoria: '', pag: '', tipo: '' }; filtroMes = ''; render(); }
+
 V.lancamentos = () => {
   const fx = lancFixo || {}, parcFixo = !!fx.parcelada, mostraCartao = parcFixo || (fx.forma || FORMAS[0]) === 'Cartão';
   const itens = [
     ...S.lancamentos.map(l => ({
       id: l.id, tipo: 'lanc', data: l.data, descricao: l.descricao, categoria: l.categoria,
+      pag: l.forma === 'Cartão' && l.cartao ? 'Cartão:' + l.cartao : (l.forma || ''),
       forma: l.forma === 'Cartão' && l.cartao ? `Cartão · ${l.cartao}${l.prox ? ' · próxima fatura' : ''}` : (l.forma || '—'), valor: l.valor, obs: ''
     })),
     ...S.parcelados.map(p => ({
       id: p.id, tipo: 'parc', data: p.dataCompra, descricao: p.descricao, categoria: p.categoria || 'Outros',
+      pag: 'Cartão:' + p.cartao, parcelada: true,
       forma: `Cartão ${p.cartao}`, valor: p.valorTotal, obs: `${p.parcelas}x de ${brl(valorParcela(p))}`
     }))
   ];
+  const fl = filtroLanc, busca = semAcento(fl.texto.trim());
   const lista = itens
     .filter(i => !filtroMes || mkOf(i.data) === filtroMes)
+    .filter(i => !busca || semAcento(i.descricao || '').includes(busca))
+    .filter(i => !fl.categoria || i.categoria === fl.categoria)
+    .filter(i => !fl.pag || i.pag === fl.pag)
+    .filter(i => !fl.tipo || (fl.tipo === 'parc') === !!i.parcelada)
     .sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  const filtrando = !!(filtroMes || busca || fl.categoria || fl.pag || fl.tipo);
   const total = sum(lista);
+  const optsPag = [...S.config.cartoes.map(c => ['Cartão:' + c, 'Cartão · ' + c]), ...FORMAS.filter(x => x !== 'Cartão').map(x => [x, x])];
   const linhas = lista.map(i => `<tr>
       <td>${fmtData(i.data)}</td>
       <td>${esc(i.descricao)}${i.obs ? ` <span class="muted">(${esc(i.obs)})</span>` : ''}</td>
@@ -1066,7 +1141,7 @@ V.lancamentos = () => {
       <button class="danger small" onclick="excluir('${i.tipo === 'parc' ? 'parcelados' : 'lancamentos'}','${i.id}')">Excluir</button></td>
     </tr>`).join('') || `<tr><td colspan="6" class="muted">Nenhum lançamento.</td></tr>`;
   const novo = `
-    <section class="card"><h2>Novo lançamento (gasto executado)</h2>
+    <section class="card"><h2>Novo lançamento</h2>
       <form class="fields" id="formLanc" onsubmit="addLanc(event)">
         <label>Data<input type="date" name="data" value="${hoje()}" required onchange="sugerirMesFatura(this.form, 'data', 'primeira')"></label>
         <label>Descrição<input type="text" name="descricao" required></label>
@@ -1087,13 +1162,21 @@ V.lancamentos = () => {
         <button type="button" class="small" onclick="fixarLanc(this.form)">${lancFixo ? 'Soltar opções fixas' : 'Fixar estas opções'}</button>
       </form>
       ${lancFixo ? `<p class="muted" style="margin-top:10px">Opções fixas: ${esc(fx.forma || '')}${fx.cartao ? ` · ${esc(fx.cartao)}` : ''}${mostraCartao ? ` · ${fx.fatura === 'prox' ? 'próxima fatura' : 'fatura atual'}` : ''} · ${esc(fx.categoria || '')}${fx.parcelada ? ` · ${esc(fx.nParcelas || 2)}x` : ''}. Ao lançar, basta preencher descrição e valor.</p>` : ''}
-      <p class="muted" style="margin-top:10px">Fatura: "Fatura atual" põe a compra na fatura do mês da compra; "Próxima fatura", na do mês seguinte (use quando a fatura do cartão já fechou). Compra parcelada entra na fatura do cartão e no executado de cada mês das parcelas, na categoria escolhida.</p>
+      <p class="muted" style="margin-top:10px">No cartão, o lançamento é um valor a pagar: entra na fatura e só sai do saldo quando a fatura vence. "Fatura atual" põe a compra na fatura do mês da compra; "Próxima fatura", na do mês seguinte (use quando a fatura do cartão já fechou). Em Débito, Pix ou Dinheiro, o valor sai da conta na hora (aba Conta). Compra parcelada entra na fatura de cada mês das parcelas, na categoria escolhida.</p>
     </section>`;
   return `${lancEdit ? formEdicaoLanc() : novo}
     <section class="card">
-      <div class="row" style="justify-content:space-between;margin-bottom:12px">
-        <h2 style="margin:0">Lançamentos · total ${brl(total)}</h2>
-        <label style="min-width:180px">Filtrar por mês<input type="month" value="${filtroMes}" onchange="filtroMes=this.value;render()"></label>
+      <h2>Lançamentos · total ${brl(total)}${filtrando ? ` <span style="text-transform:none;letter-spacing:0">(${lista.length} de ${itens.length})</span>` : ''}</h2>
+      <div class="fields filtros" style="margin-bottom:12px">
+        <label>Buscar na descrição<input type="search" id="fBusca" value="${esc(fl.texto)}" placeholder="Ex.: mercado" oninput="filtroLanc.texto=this.value;render()"></label>
+        <label>Mês<input type="month" id="fMes" value="${filtroMes}" onchange="filtroMes=this.value;render()"></label>
+        <label>Categoria<select id="fCat" onchange="filtroLanc.categoria=this.value;render()"><option value="">Todas</option>${
+          S.config.categorias.map(c => `<option ${c === fl.categoria ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+        <label>Cartão ou forma<select id="fPag" onchange="filtroLanc.pag=this.value;render()"><option value="">Todos</option>${
+          optsPag.map(([v, t]) => `<option value="${esc(v)}" ${v === fl.pag ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+        <label>Tipo<select id="fTipo" onchange="filtroLanc.tipo=this.value;render()"><option value="">Todos</option>${
+          [['avulso', 'Gasto avulso'], ['parc', 'Compra parcelada']].map(([v, t]) => `<option value="${v}" ${v === fl.tipo ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+        ${filtrando ? `<button type="button" class="small" style="height:38px" onclick="limparFiltroLanc()">Limpar filtros</button>` : ''}
       </div>
       <div class="scroll"><table>
         <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Forma</th><th class="num">Valor</th><th></th></tr></thead>
@@ -1114,6 +1197,75 @@ function fixarRec(form) {
     try { localStorage.setItem('cf-rec-fixo', JSON.stringify(recFixo)); } catch (e) {}
   }
   render();
+}
+
+/* ---------- conta (extrato) ---------- */
+let contaMes = '';
+V.conta = () => {
+  const ext = extratoConta();
+  const m = mkOf(hoje());
+  const doMes = mm => ext.filter(i => mkOf(i.data) === mm);
+  const entradas = doMes(m).filter(i => i.valor > 0).reduce((a, i) => a + i.valor, 0);
+  const saidas = -doMes(m).filter(i => i.valor < 0).reduce((a, i) => a + i.valor, 0);
+  const hojeSaldo = saldoContaEm(hoje()), futuros = ext.filter(i => i.data > hoje());
+  const lista = ext.filter(i => !contaMes || mkOf(i.data) === contaMes).slice().reverse();
+  const linhas = lista.map(i => `<tr${i.data > hoje() ? ' class="muted"' : ''}>
+      <td>${fmtData(i.data)}</td><td>${esc(i.descricao)}</td>
+      <td>${i.origem === 'lanc' ? `${esc(i.detalhe)} <span class="muted">(lançamento)</span>` : esc(i.detalhe)}</td>
+      <td class="num ${i.valor < 0 ? 'neg' : 'pos'}">${i.valor < 0 ? '−' : '+'}${brl(Math.abs(i.valor))}</td>
+      <td class="num ${i.saldo < 0 ? 'neg' : ''}">${brl(i.saldo)}</td>
+      <td class="num">${i.origem === 'mov'
+        ? `<button class="danger small" onclick="excluir('movConta','${i.id}')">Excluir</button>`
+        : `<button class="small" onclick="ir('lancamentos');editarLanc('lanc','${i.id}')">Editar</button>`}</td>
+    </tr>`).join('') || `<tr><td colspan="6" class="muted">Nenhuma movimentação${contaMes ? ' neste mês' : ''}.</td></tr>`;
+  return `
+    <section class="grid">
+      ${card('Saldo em conta hoje', brl(hojeSaldo), futuros.length ? `Com os ${futuros.length} lançamento(s) futuro(s): ${brl(saldoContaEm('9999-12-31'))}` : `Saldo inicial ${brl(S.config.saldoConta)}`, hojeSaldo < 0 ? 'neg' : 'pos')}
+      ${card(`Entradas em ${mNome(m)}`, brl(entradas), 'Salário, depósitos e transferências recebidas', 'pos')}
+      ${card(`Saídas em ${mNome(m)}`, brl(saidas), 'Débito, Pix, Dinheiro e saídas manuais', 'neg')}
+    </section>
+    <section class="card"><h2>Nova movimentação na conta</h2>
+      <form class="fields" onsubmit="addMov(event)">
+        <label>Data<input type="date" name="data" value="${hoje()}" required></label>
+        <label>Descrição<input type="text" name="descricao" required placeholder="Ex.: salário, pagamento da fatura"></label>
+        <label>Tipo<select name="tipo"><option>Entrada</option><option>Saída</option></select></label>
+        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
+        <button>Lançar</button>
+      </form>
+      <p class="muted" style="margin-top:10px">Gastos lançados em Débito, Pix ou Dinheiro (aba Lançamentos) saem daqui sozinhos. Use este formulário para o que entra na conta (salário, depósitos) e para saídas que não são gastos de categoria, como o pagamento da fatura do cartão.</p>
+    </section>
+    <section class="card"><h2>Saldo inicial</h2>
+      <form class="fields" onsubmit="salvarSaldoInicial(event)">
+        <label>Saldo da conta antes do primeiro lançamento (R$)<input type="number" step="0.01" name="saldo" value="${Number(S.config.saldoConta) || 0}" required></label>
+        <button>Salvar</button>
+      </form>
+      <p class="muted" style="margin-top:10px">É o mesmo "Saldo inicial da conta" de Configurações, que também é o ponto de partida da projeção.</p>
+    </section>
+    <section class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Extrato</h2>
+        <label style="min-width:180px">Mês<input type="month" id="fContaMes" value="${contaMes}" onchange="contaMes=this.value;render()"></label>
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>Data</th><th>Descrição</th><th>Origem</th><th class="num">Valor</th><th class="num">Saldo</th><th></th></tr></thead>
+        <tbody>${linhas}</tbody>
+      </table></div>
+      <p class="muted" style="margin-top:10px">Movimentações com data futura aparecem em cinza e só entram no saldo de hoje quando a data chegar.</p>
+    </section>`;
+};
+function addMov(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const valor = parseFloat(f.valor.value);
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  if (!f.descricao.value.trim()) return alert('Informe a descrição.');
+  S.movConta = [...(S.movConta || []), { id: uid(), data: f.data.value, descricao: f.descricao.value.trim(), tipo: f.tipo.value, valor }];
+  commit();
+}
+function salvarSaldoInicial(e) {
+  e.preventDefault();
+  S.config.saldoConta = parseFloat(e.target.elements.saldo.value) || 0;
+  commit();
 }
 
 V.recorrentes = () => {
@@ -1225,22 +1377,46 @@ function faturaTrocarMes(e) {
   render();
 }
 
-V.faturas = () => {
-  // A lista começa no mês da fatura mais antiga com gasto no cartão (até 12 meses antes da projeção),
-  // para que compras anteriores ao 1º mês da projeção também possam ser consultadas.
+// Meses que a aba Faturas oferece: começa no mês da fatura mais antiga com gasto no cartão (até 12 meses
+// antes da projeção), para que compras anteriores ao 1º mês da projeção também possam ser consultadas.
+function mesesFatura() {
   const p0 = S.config.primeiroMes;
   const antigos = S.lancamentos.filter(l => l.forma === 'Cartão' && l.cartao).map(mesFatLanc)
     .concat(S.parcelados.map(p => mkOf(p.inicio)))
     .filter(m => /^\d{4}-\d{2}$/.test(m) && mIdx(m) < mIdx(p0) && mIdx(m) >= mIdx(addM(p0, -12)));
   const ini = antigos.reduce((a, m) => (mIdx(m) < mIdx(a) ? m : a), p0);
-  const meses = Array.from({ length: 36 + mIdx(p0) - mIdx(ini) }, (_, i) => addM(ini, i));
+  return Array.from({ length: 36 + mIdx(p0) - mIdx(ini) }, (_, i) => addM(ini, i));
+}
+// Posição do mês em relação a hoje, por extenso.
+function mesRelativo(m) {
+  const d = mIdx(m) - mIdx(mkOf(hoje()));
+  if (d === 0) return 'mês atual';
+  if (d === 1) return 'próximo mês';
+  if (d === -1) return 'mês passado';
+  return d > 0 ? `daqui a ${d} meses` : `há ${-d} meses`;
+}
+function faturaPasso(n) {
+  const meses = mesesFatura(), i = meses.indexOf(faturaMes) + n;
+  if (i >= 0 && i < meses.length) { faturaMes = meses[i]; render(); }
+}
+
+V.faturas = () => {
+  const p0 = S.config.primeiroMes;
+  const meses = mesesFatura();
   if (!faturaMes || !meses.includes(faturaMes)) faturaMes = meses.includes(mkOf(hoje())) ? mkOf(hoje()) : p0;
+  const iMes = meses.indexOf(faturaMes);
   const blocos = linhasFatura(faturaMes);
   const total = blocos.reduce((t, b) => t + b.total, 0);
   const receita = sumRec('Receita', faturaMes) + sumEv('Receita', faturaMes);
   const pct = receita > 0 ? total / receita : null;
   const prox = Array.from({ length: 12 }, (_, i) => addM(p0, i));
   return `
+    <div class="mes-fatura" id="mesFatura">
+      <button type="button" onclick="faturaPasso(-1)" aria-label="Mês anterior" ${iMes > 0 ? '' : 'disabled'}>‹</button>
+      <div style="text-align:center"><div class="rel">Você está vendo a fatura de</div>
+        <strong>${mNome(faturaMes)}</strong> <span class="rel">· ${mesRelativo(faturaMes)}</span></div>
+      <button type="button" onclick="faturaPasso(1)" aria-label="Próximo mês" ${iMes < meses.length - 1 ? '' : 'disabled'}>›</button>
+    </div>
     <section class="card"><h2>Faturas dos cartões</h2>
       <form class="fields" onsubmit="faturaTrocarMes(event)">
         <label>Mês <select name="mes">${meses.map(m => `<option value="${m}" ${m === faturaMes ? 'selected' : ''}>${mNome(m)}</option>`).join('')}</select></label>
@@ -1325,7 +1501,8 @@ V.parcelas = () => {
       <td>${fmtData(p.dataCompra)}</td><td>${esc(p.cartao)}</td><td>${esc(p.descricao)}</td>
       <td class="num">${brl(p.valorTotal)}</td><td class="num">${p.parcelas}x</td><td class="num">${brl(valorParcela(p))}</td>
       <td>${mNome(p.inicio)}</td><td>${mNome(ultimaParcela(p))}</td>
-      <td class="num"><button class="danger small" onclick="excluir('parcelados','${p.id}')">Excluir</button></td>
+      <td class="num"><button class="small" onclick="ir('lancamentos');editarLanc('parc','${p.id}')">Editar</button>
+      <button class="danger small" onclick="excluir('parcelados','${p.id}')">Excluir</button></td>
     </tr>`).join('') || `<tr><td colspan="9" class="muted">Nenhum parcelamento.</td></tr>`;
   return `
     <section class="card"><h2>Nova compra parcelada</h2>
@@ -1358,7 +1535,7 @@ V.parcelas = () => {
         <label>Observação<input type="text" name="descricao"></label>
         <button>Lançar</button>
       </form>
-      <p class="muted" style="margin-top:10px">Estorno: crédito único no mês da fatura escolhido. Abatimento: dividido igualmente pelas parcelas restantes a partir desse mês. Os dois reduzem a fatura e o executado, na categoria da compra.</p>` : `<p class="muted">Cadastre uma compra parcelada primeiro.</p>`}
+      <p class="muted" style="margin-top:10px">Estorno: crédito único no mês da fatura escolhido. Abatimento: dividido igualmente pelas parcelas restantes a partir desse mês. Os dois reduzem a fatura e o gasto da categoria da compra.</p>` : `<p class="muted">Cadastre uma compra parcelada primeiro.</p>`}
     </section>
     <section class="card"><h2>Estornos e abatimentos lançados</h2><div class="scroll"><table>
       <thead><tr><th>Mês da fatura</th><th>Tipo</th><th>Compra</th><th>Cartão</th><th class="num">Valor</th><th>Observação</th><th></th></tr></thead>
@@ -1372,7 +1549,7 @@ V.parcelas = () => {
         <label>Descrição<input type="text" name="descricao" placeholder="Ex.: pagamento antecipado"></label>
         <button>Lançar ajuste</button>
       </form>
-      <p class="muted" style="margin-top:10px">Funciona como um pagamento: diminui o valor da fatura do cartão naquele mês, sem mudar as parcelas das compras nem o executado por categoria. Para devolver o valor de uma compra específica, use o estorno acima.</p>
+      <p class="muted" style="margin-top:10px">Funciona como um pagamento: diminui o valor da fatura do cartão naquele mês, sem mudar as parcelas das compras nem o gasto por categoria. Para devolver o valor de uma compra específica, use o estorno acima.</p>
       ${(S.creditos || []).length ? `<div class="scroll" style="margin-top:12px"><table>
         <thead><tr><th>Mês da fatura</th><th>Cartão</th><th>Descrição</th><th class="num">Valor</th><th></th></tr></thead>
         <tbody>${S.creditos.slice().sort((a, b) => a.mes.localeCompare(b.mes)).map(x => `<tr>
@@ -1543,6 +1720,12 @@ V.config = () => {
         <label>Novo cartão<input type="text" name="nome" required></label>
         <button>Adicionar</button>
       </form>
+      ${c.cartoes.length ? `<form class="fields" style="margin-top:10px" onsubmit="renomearLista(event,'cartoes')">
+        <label>Renomear cartão<select name="antigo">${opts(c.cartoes)}</select></label>
+        <label>Novo nome<input type="text" name="novo" required></label>
+        <button>Renomear</button>
+      </form>` : ''}
+      <p class="muted">Renomear troca o nome em todas as compras, recorrentes, lançamentos e ajustes desse cartão, sem perder nada.</p>
     </section>
     <section class="card"><h2>Categorias</h2>
       <div style="margin-bottom:12px">${cats}</div>
@@ -1550,7 +1733,12 @@ V.config = () => {
         <label>Nova categoria<input type="text" name="nome" required></label>
         <button>Adicionar</button>
       </form>
-      <p class="muted">Categorias em uso em lançamentos ou recorrentes não podem ser removidas.</p>
+      <form class="fields" style="margin-top:10px" onsubmit="renomearLista(event,'categorias')">
+        <label>Renomear categoria<select name="antigo">${opts(c.categorias)}</select></label>
+        <label>Novo nome<input type="text" name="novo" required></label>
+        <button>Renomear</button>
+      </form>
+      <p class="muted">Renomear troca o nome em todos os lançamentos, compras, recorrentes e orçamentos dessa categoria. Categorias em uso não podem ser removidas, mas podem ser renomeadas.</p>
     </section>`;
 };
 
@@ -1575,7 +1763,7 @@ function render() {
   $('aviso').innerHTML = avisoBackup();
   $('abas').innerHTML = [
     ['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'],
-    ['lancamentos', 'Lançamentos'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'],
+    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'],
     ['eventuais', 'Eventuais'], ['patrimonio', 'Patrimônio'], ['config', 'Configurações']
   ].map(([k, t]) => `<button class="tab ${k === aba ? 'on' : ''}" onclick="ir('${k}')">${t}</button>`).join('');
   // Preserva as posições de rolagem (tabelas largas e barra de abas) entre redesenhos.
@@ -1588,6 +1776,8 @@ function render() {
   restaurarRascunhos();
   restaurarFoco(foco);
   $('abas').scrollLeft = navX;
+  document.documentElement.style.setProperty('--abas-h', $('abas').offsetHeight + 'px');
+  if (!$('calc').hidden) calcDesenhar(); // a aba pode ter mudado: atualiza o campo de destino
   if (!mudouAba) {
     [...$('conteudo').querySelectorAll('.scroll')].forEach((el, i) => { el.scrollLeft = scrollsAntes[i] || 0; });
     window.scrollTo(0, posY);
@@ -1595,11 +1785,118 @@ function render() {
 }
 let abaRenderizada = null;
 
+/* ---------- calculadora ----------
+   Botão flutuante em todas as abas. O resultado pode ir para o último campo de valor tocado
+   (ou, se nenhum foi tocado, para o primeiro campo de valor da aba). */
+// Avalia + − × ÷ e parênteses, sem eval. Número com vírgula usa ponto como milhar (1.234,56);
+// sem vírgula, o ponto é a casa decimal. Devolve null se a conta estiver incompleta ou inválida.
+function calcAvaliar(expr) {
+  const toks = String(expr).replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-').match(/\d[\d.,]*|[-+*/()]|\S/g) || [];
+  let i = 0;
+  const num = t => {
+    const s = t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : ((t.match(/\./g) || []).length > 1 ? t.replace(/\./g, '') : t);
+    return /^\d+(\.\d+)?\.?$/.test(s) ? Number(s) : NaN;
+  };
+  const fator = () => {
+    const t = toks[i++];
+    if (t === '-') return -fator();
+    if (t === '+') return fator();
+    if (t === '(') { const v = soma(); if (toks[i++] !== ')') throw 0; return v; }
+    if (t !== undefined && /^\d/.test(t)) { const v = num(t); if (isNaN(v)) throw 0; return v; }
+    throw 0;
+  };
+  const termo = () => { let v = fator(); while (toks[i] === '*' || toks[i] === '/') v = toks[i++] === '*' ? v * fator() : v / fator(); return v; };
+  function soma() { let v = termo(); while (toks[i] === '+' || toks[i] === '-') v = toks[i++] === '+' ? v + termo() : v - termo(); return v; }
+  try {
+    if (!toks.length) return null;
+    const v = soma();
+    return i === toks.length && isFinite(v) ? Math.round(v * 1e8) / 1e8 : null;
+  } catch (e) { return null; }
+}
+const calcFmt = v => v.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+
+let calcExpr = '';
+let calcAlvo = null; // { form, name, rotulo } do último campo de valor tocado
+document.addEventListener('focusin', e => {
+  const el = e.target;
+  if (!el.matches || !el.matches('#conteudo input[type=number]')) return;
+  const lb = el.closest('label');
+  calcAlvo = { form: el.form ? el.form.getAttribute('onsubmit') : '', name: el.name,
+    rotulo: lb ? lb.firstChild.textContent.trim() : el.name };
+  if (!$('calc').hidden) calcDesenhar();
+});
+const visivelEl = el => !!el && el.offsetParent !== null;
+// Campo que vai receber o resultado: o último tocado (se ainda estiver na tela) ou o primeiro campo de valor da aba.
+function calcCampo() {
+  if (calcAlvo) {
+    const el = document.querySelector(`#conteudo form[onsubmit="${calcAlvo.form}"] [name="${calcAlvo.name}"]`);
+    if (visivelEl(el)) return { el, rotulo: calcAlvo.rotulo };
+  }
+  const el = [...document.querySelectorAll('#conteudo input[type=number]')]
+    .find(x => visivelEl(x) && /^valor/.test(x.name));
+  if (!el) return null;
+  const lb = el.closest('label');
+  return { el, rotulo: lb ? lb.firstChild.textContent.trim() : el.name };
+}
+function calcDesenhar() {
+  const r = calcAvaliar(calcExpr), alvo = calcCampo();
+  const tecla = (t, cls = '', v = t) => `<button type="button" class="${cls}" onclick="calcTecla('${v}')">${t}</button>`;
+  $('calc').innerHTML = `
+    <input class="visor" id="calcVisor" inputmode="none" autocomplete="off" aria-label="Conta" value="${esc(calcExpr)}"
+      oninput="calcExpr=this.value;calcPrevia()" onkeydown="calcTeclado(event)">
+    <div class="res" id="calcRes">${r !== null && calcExpr ? '= ' + calcFmt(r) : ''}</div>
+    <div class="teclas">
+      ${tecla('C', 'op')}${tecla('(', 'op')}${tecla(')', 'op')}${tecla('÷', 'op')}
+      ${tecla('7')}${tecla('8')}${tecla('9')}${tecla('×', 'op')}
+      ${tecla('4')}${tecla('5')}${tecla('6')}${tecla('−', 'op')}
+      ${tecla('1')}${tecla('2')}${tecla('3')}${tecla('+', 'op')}
+      ${tecla('0')}${tecla(',')}${tecla('⌫', 'op')}${tecla('=', 'igual')}
+    </div>
+    <button type="button" id="calcUsar" onclick="calcUsar()" ${alvo && r !== null ? '' : 'disabled style="opacity:.5"'}>${
+      alvo ? `Usar em "${esc(alvo.rotulo)}"` : 'Nenhum campo de valor nesta aba'}</button>
+    <button type="button" class="small" style="background:var(--line);color:var(--ink)" onclick="calcFechar()">Fechar</button>`;
+}
+// Atualiza só a prévia e o botão "Usar" (sem redesenhar o visor, para não perder o cursor ao digitar).
+function calcPrevia() {
+  const r = calcAvaliar(calcExpr), b = $('calcUsar');
+  $('calcRes').textContent = r !== null && calcExpr ? '= ' + calcFmt(r) : '';
+  if (b && calcCampo()) { b.disabled = r === null; b.style.opacity = r === null ? '.5' : ''; }
+}
+function calcTecla(t) {
+  if (t === 'C') calcExpr = '';
+  else if (t === '⌫') calcExpr = calcExpr.slice(0, -1);
+  else if (t === '=') { const r = calcAvaliar(calcExpr); if (r !== null) calcExpr = calcFmt(r).replace(/\./g, ''); }
+  else calcExpr += t;
+  calcDesenhar();
+}
+function calcTeclado(e) {
+  if (e.key === 'Enter') { e.preventDefault(); calcTecla('='); setTimeout(() => $('calcVisor').focus(), 0); }
+  if (e.key === 'Escape') calcFechar();
+}
+function calcAbrir() {
+  if (!$('calc').hidden) return calcFechar();
+  $('calc').hidden = false;
+  calcDesenhar();
+}
+function calcFechar() { $('calc').hidden = true; }
+function calcUsar() {
+  const r = calcAvaliar(calcExpr), alvo = calcCampo();
+  if (r === null || !alvo) return;
+  alvo.el.value = (Math.round(r * 100) / 100).toFixed(2);
+  alvo.el.dispatchEvent(new Event('input', { bubbles: true }));
+  alvo.el.dispatchEvent(new Event('change', { bubbles: true }));
+  calcFechar();
+  alvo.el.scrollIntoView({ block: 'center' });
+  alvo.el.focus({ preventScroll: true });
+}
+
 /* ---------- foco e rascunhos ----------
    Ao lançar, o cursor volta ao primeiro campo do mesmo formulário; o que foi digitado
    e ainda não lançado fica salvo no navegador (sem senhas nem dados de sincronização). */
 const RASC_KEY = 'cf-rascunhos';
-const SEM_RASCUNHO = /salvarClientId|trocarSenha|conectar|senha/i;
+// Formulários de edição (salvarLanc, salvarRec) também ficam sem rascunho: eles servem para qualquer item,
+// e um rascunho de outra edição sobrescreveria os dados do item aberto.
+const SEM_RASCUNHO = /salvarClientId|trocarSenha|conectar|senha|^salvar(Lanc|Rec)\(/i;
 let ultimoEnvio = null;
 document.addEventListener('submit', e => {
   const k = e.target && e.target.getAttribute && e.target.getAttribute('onsubmit');
@@ -1625,6 +1922,8 @@ document.addEventListener('change', e => salvarRascunho(e.target), true);
 function restaurarRascunhos() {
   const r = lerRascunhos();
   let mudou = false;
+  // Apaga rascunhos de formulários que não usam rascunho (sobras de versões anteriores do app).
+  Object.keys(r).forEach(k => { if (SEM_RASCUNHO.test(k)) { delete r[k]; mudou = true; } });
   $('conteudo').querySelectorAll('form[onsubmit]').forEach(form => {
     const k = form.getAttribute('onsubmit');
     if (k === ultimoEnvio) { if (r[k]) { delete r[k]; mudou = true; } return; } // acabou de ser lançado: volta vazio
@@ -1722,10 +2021,37 @@ function addLista(e, lista) {
 function delLista(lista, i) {
   const nome = S.config[lista][i];
   const usado = lista === 'cartoes'
-    ? S.parcelados.some(p => p.cartao === nome) || S.recorrentes.some(r => r.cartao === nome)
-    : S.lancamentos.some(l => l.categoria === nome) || S.recorrentes.some(r => r.categoria === nome);
-  if (usado) return alert(`"${nome}" está em uso em lançamentos ou recorrentes.`);
+    ? S.parcelados.some(p => p.cartao === nome) || S.recorrentes.some(r => r.cartao === nome) ||
+      S.lancamentos.some(l => l.cartao === nome) || (S.creditos || []).some(x => x.cartao === nome)
+    : S.lancamentos.some(l => l.categoria === nome) || S.recorrentes.some(r => r.categoria === nome) ||
+      S.parcelados.some(p => p.categoria === nome);
+  if (usado) return alert(`"${nome}" está em uso. Para trocar o nome sem perder nada, use "Renomear".`);
   S.config[lista].splice(i, 1);
+  commit();
+}
+
+// Troca o nome de um cartão ou categoria em todos os lugares em que ele aparece, inclusive nas opções fixas.
+function renomearLista(e, lista) {
+  e.preventDefault();
+  const f = e.target.elements;
+  const antigo = f.antigo.value, novo = f.novo.value.trim();
+  if (!novo || novo === antigo) return;
+  if (S.config[lista].some(x => x !== antigo && x.toLowerCase() === novo.toLowerCase())) return alert(`Já existe "${novo}".`);
+  if (lista === 'categorias' && novo === CARTOES) return alert(`"${CARTOES}" é reservado para a linha das faturas no orçamento.`);
+  const campo = lista === 'cartoes' ? 'cartao' : 'categoria';
+  const troca = arr => (arr || []).forEach(x => { if (x[campo] === antigo) x[campo] = novo; });
+  S.config[lista] = S.config[lista].map(x => (x === antigo ? novo : x));
+  troca(S.parcelados); troca(S.recorrentes); troca(S.lancamentos);
+  if (lista === 'cartoes') troca(S.creditos);
+  else {
+    // Orçamentos são guardados por nome da categoria.
+    const renomeiaChave = o => { if (o && Object.prototype.hasOwnProperty.call(o, antigo)) { o[novo] = o[antigo]; delete o[antigo]; } };
+    renomeiaChave(S.orcamento);
+    Object.values(S.orcamentoMeses || {}).forEach(renomeiaChave);
+  }
+  [['cf-lanc-fixo', lancFixo], ['cf-rec-fixo', recFixo], ['cf-parc-fixo', parcFixo]].forEach(([k, o]) => {
+    if (o && o[campo] === antigo) { o[campo] = novo; try { localStorage.setItem(k, JSON.stringify(o)); } catch (err) {} }
+  });
   commit();
 }
 
@@ -1983,7 +2309,7 @@ function importarPlanilhaLegada(todas) {
           cartoes: cartoes.length ? cartoes : S.config.cartoes,
           categorias: categorias.length ? categorias : S.config.categorias
         },
-        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], eventuais, lancamentos, ferias
+        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], eventuais, lancamentos, ferias
       };
       commit();
       alert(`Planilha importada: ${recorrentes.length} recorrentes, ${parcelados.length} parcelamento(s), ${eventuais.length} evento(s) e ${lancamentos.length} lançamento(s).`);
@@ -2275,11 +2601,23 @@ function montarPlanilha() {
   S.eventuais.forEach(e => ev.push([N(serialMes(e.mes), FMT_MES), e.descricao, e.tipo, N(e.valor, FMT_VALOR)]));
   abas.push({ nome: 'Eventuais', linhas: ev });
 
-  // Lançamentos (gastos executados)
-  const lan = [['Data', 'Descrição', 'Categoria', 'Valor', 'Forma de pagamento', 'Fatura (vazio = atual)']];
-  S.lancamentos.forEach(l => lan.push([N(serialDate(l.data), FMT_DATA), l.descricao, l.categoria, N(l.valor, FMT_VALOR),
-    l.forma === 'Cartão' && l.cartao ? `Cartão: ${l.cartao}` : (l.forma || null), l.forma === 'Cartão' && l.prox ? 'Próxima' : null]));
+  // Lançamentos. No cartão: valor a pagar, que entra na fatura do cartão (colunas G e H, usadas na aba Faturas).
+  // Fora do cartão: gasto à vista (H = "-"). "Planejada" vem do Simulador e já está em Eventuais.
+  const lan = [['Data', 'Descrição', 'Categoria', 'Valor', 'Forma de pagamento', 'Fatura (vazio = atual)',
+    'Mês da fatura (calculado)', 'Cartão (calculado; - = à vista)']];
+  S.lancamentos.forEach(l => {
+    const r = lan.length + 1;
+    lan.push([N(serialDate(l.data), FMT_DATA), l.descricao, l.categoria, N(l.valor, FMT_VALOR),
+      noCartao(l) ? `Cartão: ${l.cartao}` : (l.forma || null), l.forma === 'Cartão' && l.prox ? 'Próxima' : null,
+      F(`IF(H${r}="-","",DATE(YEAR(A${r}),MONTH(A${r})+IF(F${r}="Próxima",1,0),1))`, noCartao(l) ? serialMes(mesFatLanc(l)) : '', FMT_MES),
+      F(`IF(LEFT(E${r},7)="Cartão:",TRIM(MID(E${r},8,200)),"-")`, noCartao(l) ? l.cartao : '-')]);
+  });
   abas.push({ nome: 'Lancamentos', linhas: lan });
+
+  // Conta: movimentações manuais (os gastos em Débito, Pix e Dinheiro estão em Lancamentos)
+  const ct = [['Data', 'Descrição', 'Tipo (Entrada/Saída)', 'Valor']];
+  (S.movConta || []).forEach(x => ct.push([N(serialDate(x.data), FMT_DATA), x.descricao, x.tipo, N(x.valor, FMT_VALOR)]));
+  abas.push({ nome: 'Conta', linhas: ct });
 
   // Orçamento por mês (valores editáveis)
   const om = [
@@ -2291,11 +2629,11 @@ function montarPlanilha() {
   om.push(['Total', ...mesesOrc.map((m, i) => F(`SUM(${colMes(i)}4:${colMes(i)}${ultimaCat})`, totalOrc(m), FMT_VALOR))]);
   abas.push({ nome: 'Orcamento_Meses', linhas: om });
 
-  // Orçamento x executado do mês de referência (fórmulas)
+  // Orçamento x gasto lançado do mês de referência (fórmulas)
   const resumo = [
-    ['Orçamento x executado · mês de referência (tudo calculado)'],
+    ['Orçamento x gasto lançado · mês de referência (tudo calculado)'],
     ['Mês de referência', F('Config!B5', serialMes(c.mesRef), FMT_MES)],
-    ['Categoria', 'Orçamento mensal', 'Executado no mês', 'Diferença', '% usado'],
+    ['Categoria', 'Orçamento mensal', 'Gasto lançado no mês', 'Diferença', '% usado'],
   ];
   let totB = 0, totC = 0;
   cats.forEach((cat, i) => {
@@ -2317,7 +2655,7 @@ function montarPlanilha() {
   abas.push({ nome: 'Orcamento', linhas: resumo });
 
   // Faturas por cartão (36 meses)
-  const fat = [['Fatura prevista por cartão (assinaturas + parcelamentos)'], [],
+  const fat = [['Fatura por cartão (parcelamentos + assinaturas + gastos lançados no cartão − estornos e ajustes)'], [],
     ['Mês', ...Array.from({ length: NCART }, (_, j) => F(`IF(Config!A${8 + j}="","",Config!A${8 + j})`, cartoes[j] || '')), 'Total faturas']];
   meses.forEach((m, i) => {
     const r = 4 + i;
@@ -2327,7 +2665,7 @@ function montarPlanilha() {
       const col = colL(j + 1), card = cartoes[j];
       const val = card ? fatCartao(card, m) : 0;
       total += val;
-      row.push(F(`IF(${col}$3="",0,SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$B$2:$B$300,${col}$3,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})+SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"Cartão",Recorrentes!$C$2:$C$300,${col}$3,Recorrentes!$J$2:$J$300,"<="&EOMONTH($A${r},0),Recorrentes!$K$2:$K$300,">="&$A${r})-SUMIFS(Estornos!$K$2:$K$500,Estornos!$B$2:$B$500,${col}$3,Estornos!$I$2:$I$500,"<="&$A${r},Estornos!$J$2:$J$500,">="&$A${r})-SUMIFS(Ajustes_Fatura!$C$2:$C$500,Ajustes_Fatura!$B$2:$B$500,${col}$3,Ajustes_Fatura!$A$2:$A$500,$A${r}))`, val, FMT_VALOR));
+      row.push(F(`IF(${col}$3="",0,SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$B$2:$B$300,${col}$3,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})+SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"Cartão",Recorrentes!$C$2:$C$300,${col}$3,Recorrentes!$J$2:$J$300,"<="&EOMONTH($A${r},0),Recorrentes!$K$2:$K$300,">="&$A${r})-SUMIFS(Estornos!$K$2:$K$500,Estornos!$B$2:$B$500,${col}$3,Estornos!$I$2:$I$500,"<="&$A${r},Estornos!$J$2:$J$500,">="&$A${r})-SUMIFS(Ajustes_Fatura!$C$2:$C$500,Ajustes_Fatura!$B$2:$B$500,${col}$3,Ajustes_Fatura!$A$2:$A$500,$A${r})+SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$H$2:$H$2000,${col}$3,Lancamentos!$G$2:$G$2000,$A${r}))`, val, FMT_VALOR));
     }
     row.push(F(`SUM(B${r}:${colL(NCART)}${r})`, total, FMT_VALOR));
     fat.push(row);
@@ -2340,9 +2678,12 @@ function montarPlanilha() {
     ['Projeção mês a mês (36 meses) · tudo calculado'],
     ['Marque 1 na coluna J no mês em que o orçamento paga também o mês seguinte (o mês seguinte fica zerado).'],
     ['Mês', 'Receitas fixas', 'Receitas eventuais', 'Total receitas', 'Despesas fixas', 'Faturas dos cartões', 'Despesas eventuais',
-      'Orçamento variável', 'Base de despesas do mês', 'Férias: marque 1', 'Ajuste de férias', 'Despesas totais do mês',
-      'Saldo do mês', 'Saldo acumulado', 'Executado (Lancamentos)', 'Previsto - executado'],
+      'Orçamento restante (orçado − já lançado, por categoria)', 'Base de despesas do mês', 'Férias: marque 1', 'Ajuste de férias', 'Despesas totais do mês',
+      'Saldo do mês', 'Saldo acumulado', 'Gasto lançado (Lancamentos + parcelas)', 'Previsto - lançado', 'Gastos à vista (fora do cartão)'],
   ];
+  // Avulsos lançados por categoria no mês (vetor alinhado às categorias de Orcamento_Meses), sem os do Simulador.
+  const lancCatF = r => `SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$C$2:$C$2000,Orcamento_Meses!$A$4:$A$${ultimaCat},Lancamentos!$A$2:$A$2000,">="&$A${r},Lancamentos!$A$2:$A$2000,"<"&EDATE($A${r},1),Lancamentos!$E$2:$E$2000,"<>Planejada")`;
+  const orcMesF = r => `INDEX(Orcamento_Meses!$B$4:$${ultCol}$${ultimaCat},0,MATCH($A${r},Orcamento_Meses!$B$3:$${ultCol}$3,0))`;
   const sumRecF = g => `SUMIFS(Recorrentes!$E$2:$E$300,Recorrentes!$B$2:$B$300,"${g}",Recorrentes!$F$2:$F$300,"<="&EOMONTH($A{r},0),Recorrentes!$H$2:$H$300,">="&$A{r})`;
   const sumEvF = t => `SUMIFS(Eventuais!$D$2:$D$300,Eventuais!$C$2:$C$300,"${t}",Eventuais!$A$2:$A$300,">="&$A{r},Eventuais!$A$2:$A$300,"<"&EDATE($A{r},1))`;
   proj.forEach((x, i) => {
@@ -2359,8 +2700,8 @@ function montarPlanilha() {
       F(sumRecF('Fixo').replace(/\{r\}/g, r), x.ef, FMT_VALOR),
       F(`Faturas!${colL(NCART + 1)}${r}`, x.fat, FMT_VALOR),
       F(sumEvF('Despesa').replace(/\{r\}/g, r), x.ed, FMT_VALOR),
-      F(`SUM(INDEX(Orcamento_Meses!$B$4:$${ultCol}$${ultimaCat},0,MATCH($A${r},Orcamento_Meses!$B$3:$${ultCol}$3,0)))`, x.ov, FMT_VALOR),
-      F(`E${r}+F${r}+G${r}+H${r}`, x.I, FMT_VALOR),
+      F(`SUMPRODUCT((${orcMesF(r)}-${lancCatF(r)}>0)*(${orcMesF(r)}-${lancCatF(r)}))`, x.ov, FMT_VALOR),
+      F(`E${r}+F${r}+G${r}+H${r}+Q${r}`, x.I, FMT_VALOR),
       N(x.ferias ? 1 : 0),
       F(adj, x.adj, FMT_VALOR),
       F(`I${r}+K${r}`, x.L, FMT_VALOR),
@@ -2368,6 +2709,7 @@ function montarPlanilha() {
       F(`Config!$B$4+SUM($M$4:M${r})`, x.acum, FMT_VALOR),
       F(`SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$A$2:$A$2000,">="&$A${r},Lancamentos!$A$2:$A$2000,"<"&EDATE($A${r},1))+SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})-SUMIFS(Estornos!$K$2:$K$500,Estornos!$I$2:$I$500,"<="&$A${r},Estornos!$J$2:$J$500,">="&$A${r})`, x.exec, FMT_VALOR),
       F(`IF($A${r}<=TODAY(),L${r}-O${r},0)`, x.dif, FMT_VALOR),
+      F(`SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$H$2:$H$2000,"-",Lancamentos!$A$2:$A$2000,">="&$A${r},Lancamentos!$A$2:$A$2000,"<"&EDATE($A${r},1),Lancamentos!$E$2:$E$2000,"<>Planejada")`, x.av, FMT_VALOR),
     ]);
   });
   abas.push({ nome: 'Projecao_36m', linhas: pr });
@@ -2443,6 +2785,12 @@ function interpretarNova(g) {
     id: uid(), mes: mkOf(isoData(r[0])), descricao: String(r[1] || ''), tipo: String(r[2] || 'Despesa'), valor: Number(r[3]) || 0
   }));
 
+  // Movimentações da conta (aba opcional: planilhas antigas não têm).
+  const movConta = (g.Conta || []).slice(1).filter(r => r[0] && r[1] && r[3]).map(r => ({
+    id: uid(), data: isoData(r[0]) || hoje(), descricao: String(r[1]),
+    tipo: /^entrada/i.test(String(r[2] || '').trim()) ? 'Entrada' : 'Saída', valor: Number(r[3]) || 0
+  }));
+
   // Ajustes manuais na fatura (aba opcional: planilhas antigas não têm).
   const creditos = (g.Ajustes_Fatura || []).slice(1).filter(r => r[0] && r[1] && r[2]).map(r => ({
     id: uid(), cartao: String(r[1]), mes: mkOf(isoData(r[0])), valor: Number(r[2]) || 0, descricao: r[3] ? String(r[3]) : ''
@@ -2492,7 +2840,7 @@ function interpretarNova(g) {
       cartoes: cartoes.length ? cartoes : S.config.cartoes,
       categorias: categorias.length ? categorias : S.config.categorias
     },
-    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, eventuais, lancamentos, ferias, patrimonio
+    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, eventuais, lancamentos, ferias, patrimonio
   };
 }
 
@@ -2512,7 +2860,7 @@ function importarPlanilha(input) {
       if (!confirm('Importar a planilha substitui todos os dados atuais pelo conteúdo dela. Continuar?')) return;
       S = { ...S, ...nova };
       commit();
-      alert(`Planilha importada: ${S.recorrentes.length} recorrentes, ${S.parcelados.length} parcelamento(s), ${S.eventuais.length} evento(s), ${S.lancamentos.length} lançamento(s), ${(S.creditos || []).length} ajuste(s) de fatura.`);
+      alert(`Planilha importada: ${S.recorrentes.length} recorrentes, ${S.parcelados.length} parcelamento(s), ${S.eventuais.length} evento(s), ${S.lancamentos.length} lançamento(s), ${(S.creditos || []).length} ajuste(s) de fatura, ${(S.movConta || []).length} movimentação(ões) da conta.`);
     } catch (err) {
       alert('A planilha tem um formato inesperado. Use a planilha exportada pelo app.');
     }
