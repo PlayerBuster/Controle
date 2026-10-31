@@ -1,0 +1,186 @@
+// Cálculos do app: datas, parcelas, recorrentes, faturas, estornos, executado, orçamento e projeção.
+// Os valores esperados foram calculados à mão a partir dos dados de cada cenário.
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { abrirApp, fecharNavegador, definirDados, avaliar, c2 } = require('./lib');
+
+let pg;
+before(async () => { pg = await abrirApp(); });
+after(async () => { assert.deepEqual(pg.erros, [], 'erros de JavaScript na página'); await fecharNavegador(); });
+
+const cenario = async (dados, expr) => { await definirDados(pg, dados); return avaliar(pg, expr); };
+const itens = (m, cartao) => `linhasFatura('${m}').find(b => b.cartao === '${cartao}')`;
+
+/* ---------- utilitários de data ---------- */
+test('addM soma meses, inclusive na virada do ano', async () => {
+  assert.deepEqual(await avaliar(pg, `[addM('2026-11', 2), addM('2026-01', -1), addM('2026-12', 1), addM('2026-05', 0)]`),
+    ['2027-01', '2025-12', '2027-01', '2026-05']);
+});
+
+test('addMesData segue o EDATE da planilha (dia limitado ao fim do mês)', async () => {
+  assert.deepEqual(await avaliar(pg, `[addMesData('2027-01-31', 1), addMesData('2028-01-31', 1), addMesData('2026-10-17', 0), addMesData('2026-12-15', 1)]`),
+    ['2027-02-28', '2028-02-29', '2026-10-17', '2027-01-15']);
+});
+
+test('ehProxima reconhece "Próxima" com ou sem acento e em qualquer caixa', async () => {
+  assert.deepEqual(await avaliar(pg, `['Próxima', 'proxima', 'PRÓXIMA ', ' próxima fatura', '', null, 'Atual'].map(ehProxima)`),
+    [true, true, true, true, false, false, false]);
+});
+
+test('isoData converte número de série, dd/mm/aaaa e ISO', async () => {
+  assert.deepEqual(await avaliar(pg, `[isoData(46312), isoData('31/10/2026'), isoData('2026-10-31T10:00'), isoData(''), mkOf('2026-10-31')]`),
+    ['2026-10-17', '2026-10-31', '2026-10-31', '', '2026-10']);
+});
+
+/* ---------- parcelas ---------- */
+test('valor da parcela: total ÷ nº de parcelas, ou o valor informado', async () => {
+  assert.deepEqual(await avaliar(pg, `[valorParcela({ valorTotal: 1000, parcelas: 3 }), valorParcela({ valorTotal: 1017.9, parcelas: 12, valorParcela: 84.83 })]`),
+    [333.33, 84.83]);
+});
+
+test('última parcela e meses em que a compra está ativa', async () => {
+  const p = `{ inicio: '2026-11', parcelas: 12 }`;
+  assert.deepEqual(await avaliar(pg, `[ultimaParcela(${p}), ...['2026-10', '2026-11', '2027-10', '2027-11'].map(m => parcelaAtiva(${p}, m))]`),
+    ['2027-10', false, true, true, false]);
+});
+
+/* ---------- recorrentes ---------- */
+test('recorrente ativo do mês de início até o mês do fim', async () => {
+  const r1 = `{ inicio: '2026-10-17', fim: '' }`, r2 = `{ inicio: '2026-12-21', fim: '2027-03-31' }`;
+  assert.deepEqual(await avaliar(pg, `[ativo(${r1}, '2026-09'), ativo(${r1}, '2026-10'), ativo(${r1}, '2099-12'),
+    ativo(${r2}, '2026-11'), ativo(${r2}, '2027-03'), ativo(${r2}, '2027-04')]`),
+    [false, true, true, false, true, false]);
+});
+
+test('recorrente com "Próxima fatura" entra na fatura um mês depois, do início ao fim', async () => {
+  const r1 = `{ inicio: '2026-10-17', fim: '', prox: true }`, r2 = `{ inicio: '2026-12-21', fim: '2027-03-31', prox: true }`;
+  assert.deepEqual(await avaliar(pg, `[recNaFatura(${r1}, '2026-10'), recNaFatura(${r1}, '2026-11'),
+    recNaFatura(${r2}, '2026-12'), recNaFatura(${r2}, '2027-01'), recNaFatura(${r2}, '2027-04'), recNaFatura(${r2}, '2027-05')]`),
+    [false, true, false, true, true, false]);
+});
+
+/* ---------- faturas ---------- */
+const DADOS_FATURA = {
+  config: { cartoes: ['Nubank', 'Itaú'], primeiroMes: '2026-11' },
+  parcelados: [
+    { id: 'p1', dataCompra: '2026-10-05', cartao: 'Nubank', descricao: 'Celular', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-10' },
+    { id: 'p2', dataCompra: '2026-11-02', cartao: 'Itaú', descricao: 'Fone', categoria: 'Outros', valorTotal: 300, parcelas: 3, inicio: '2026-11' }],
+  recorrentes: [
+    { id: 'r1', descricao: 'Estadao', grupo: 'Cartão', cartao: 'Nubank', categoria: 'Assinaturas', valor: 1.9, inicio: '2026-10-17', fim: '', prox: true },
+    { id: 'r2', descricao: 'TotalPass', grupo: 'Cartão', cartao: 'Nubank', categoria: 'Assinaturas', valor: 89.9, inicio: '2026-10-21', fim: '' },
+    { id: 'r3', descricao: 'Aluguel', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 2000, inicio: '2026-01-01', fim: '' }],
+  lancamentos: [
+    { id: 'l1', data: '2026-10-31', descricao: 'Lanche sexta', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 42, prox: true },
+    { id: 'l2', data: '2026-10-20', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 42 },
+    { id: 'l3', data: '2026-10-25', descricao: 'Feira', categoria: 'Alimentação', forma: 'Pix', cartao: '', valor: 30 },
+    { id: 'l4', data: '2026-12-15', descricao: 'Presente', categoria: 'Outros', forma: 'Cartão', cartao: 'Itaú', valor: 50, prox: true },
+    { id: 'l5', data: '2026-11-05', descricao: 'Uber', categoria: 'Transporte', forma: 'Cartão', cartao: 'Itaú', valor: 10 }]
+};
+
+test('fatura prevista (fatCartao): parcelas e recorrentes do cartão, sem gastos avulsos', async () => {
+  const r = await cenario(DADOS_FATURA, `[fatCartao('Nubank', '2026-10'), fatCartao('Nubank', '2026-11'), fatCartao('Itaú', '2026-11'),
+    fatCartao('Itaú', '2027-02'), faturaTotal('2026-11')]`);
+  assert.deepEqual(r.map(c2), [189.9, 191.8, 100, 0, 291.8]);
+});
+
+test('fatura real: avulso no cartão entra no mês da compra', async () => {
+  const b = await cenario(DADOS_FATURA, itens('2026-10', 'Nubank'));
+  assert.deepEqual(b.itens.map(i => i.descricao), ['Celular', 'TotalPass', 'Lanche']);
+  assert.equal(c2(b.total), 231.9);
+});
+
+test('fatura real: avulso e recorrente com "Próxima fatura" entram no mês seguinte', async () => {
+  const b = await cenario(DADOS_FATURA, itens('2026-11', 'Nubank'));
+  assert.deepEqual(b.itens.map(i => [i.descricao, i.tipo, i.parcela]),
+    [['Celular', 'Parcelado', '2/12'], ['Estadao', 'Recorrente', ''], ['TotalPass', 'Recorrente', ''], ['Lanche sexta', 'Lançamento', '']]);
+  assert.equal(c2(b.total), 233.8);
+});
+
+test('fatura real: "Próxima fatura" atravessa a virada do ano', async () => {
+  const r = await cenario(DADOS_FATURA, `[${itens('2026-11', 'Itaú')}, ${itens('2026-12', 'Itaú')}, ${itens('2027-01', 'Itaú')}]`);
+  assert.deepEqual(r.map(b => b.itens.map(i => i.descricao)), [['Fone', 'Uber'], ['Fone'], ['Fone', 'Presente']]);
+  assert.deepEqual(r.map(b => c2(b.total)), [110, 100, 150]);
+  assert.equal(r[2].itens[0].parcela, '3/3');
+});
+
+test('gasto pago no Pix não entra em nenhuma fatura', async () => {
+  const r = await cenario(DADOS_FATURA, `linhasFatura('2026-10').flatMap(b => b.itens.map(i => i.descricao))`);
+  assert.ok(!r.includes('Feira'));
+});
+
+/* ---------- estornos e abatimentos ---------- */
+const compra = { id: 'nb', dataCompra: '2026-10-20', cartao: 'Nubank', descricao: 'Notebook', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-11' };
+const comAjuste = ajuste => ({ config: { cartoes: ['Nubank'] }, parcelados: [compra], estornos: [{ id: 'e1', parcelaId: 'nb', descricao: '', ...ajuste }] });
+const fatMeses = meses => `[${meses.map(m => `fatCartao('Nubank', '${m}')`).join(',')}]`;
+
+test('estorno: crédito único no mês escolhido', async () => {
+  const r = await cenario(comAjuste({ tipo: 'Estorno', mes: '2027-01', valor: 300 }), fatMeses(['2026-12', '2027-01', '2027-02']));
+  assert.deepEqual(r.map(c2), [100, -200, 100]);
+  const b = await avaliar(pg, itens('2027-01', 'Nubank'));
+  assert.deepEqual(b.itens.find(i => i.tipo === 'Estorno').valor, -300);
+});
+
+test('abatimento: dividido pelas parcelas restantes a partir do mês escolhido', async () => {
+  const r = await cenario(comAjuste({ tipo: 'Abatimento', mes: '2027-01', valor: 300 }), fatMeses(['2026-12', '2027-01', '2027-10', '2027-11']));
+  assert.deepEqual(r.map(c2), [100, 70, 70, 0]);
+});
+
+test('abatimento com mês anterior à compra: dividido por todas as parcelas', async () => {
+  const r = await cenario(comAjuste({ tipo: 'Abatimento', mes: '2026-09', valor: 300 }), fatMeses(['2026-11', '2027-10']));
+  assert.deepEqual(r.map(c2), [75, 75]);
+});
+
+test('abatimento depois da última parcela: crédito único naquele mês', async () => {
+  const r = await cenario(comAjuste({ tipo: 'Abatimento', mes: '2028-01', valor: 300 }), fatMeses(['2027-10', '2028-01']));
+  assert.deepEqual(r.map(c2), [100, -300]);
+});
+
+/* ---------- executado ---------- */
+test('executado do mês e por categoria (pela data da compra, mesmo com "Próxima fatura")', async () => {
+  const dados = {
+    config: { cartoes: ['Nubank'] }, parcelados: [compra],
+    estornos: [{ id: 'e1', parcelaId: 'nb', tipo: 'Estorno', mes: '2026-11', valor: 300, descricao: '' }],
+    lancamentos: [
+      { id: 'a', data: '2026-11-03', descricao: 'Cinema', categoria: 'Lazer', forma: 'Pix', cartao: '', valor: 50 },
+      { id: 'b', data: '2026-11-30', descricao: 'Bar', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 20, prox: true },
+      { id: 'c', data: '2026-12-01', descricao: 'Farmácia', categoria: 'Saúde', forma: 'Pix', cartao: '', valor: 15 }]
+  };
+  const r = await cenario(dados, `[execMes('2026-11'), execCat('Lazer', '2026-11'), execCat('Outros', '2026-11'), execCat('Saúde', '2026-12'), execMes('2026-12')]`);
+  assert.deepEqual(r.map(c2), [-130, 70, -200, 15, 115]);
+});
+
+/* ---------- orçamento, mês e projeção ---------- */
+const DADOS_MES = {
+  config: { cartoes: ['Nubank'], primeiroMes: '2026-11', saldoConta: 1000 },
+  recorrentes: [
+    { id: 'r1', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 5000, inicio: '2026-01-01', fim: '' },
+    { id: 'r2', descricao: 'Aluguel', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 2000, inicio: '2026-01-01', fim: '' },
+    { id: 'r3', descricao: 'Netflix', grupo: 'Cartão', cartao: 'Nubank', categoria: 'Assinaturas', valor: 40, inicio: '2026-01-01', fim: '' }],
+  parcelados: [compra],
+  eventuais: [
+    { id: 'v1', mes: '2026-11', descricao: '13º', tipo: 'Receita', valor: 1000 },
+    { id: 'v2', mes: '2026-11', descricao: 'IPVA', tipo: 'Despesa', valor: 300 }],
+  orcamento: { Lazer: 200, 'Saúde': 100 },
+  orcamentoMeses: { '2026-12': { Lazer: 500 } }
+};
+
+test('orçamento do mês: o específico, se houver; senão, o padrão', async () => {
+  assert.deepEqual(await cenario(DADOS_MES, `[totalOrc('2026-11'), totalOrc('2026-12')]`), [300, 500]);
+});
+
+test('composição do mês (mesBase)', async () => {
+  const r = await cenario(DADOS_MES, `[mesBase('2026-11'), mesBase('2026-12')]`);
+  assert.deepEqual(r.map(b => [b.rf, b.re, b.rt, b.ef, c2(b.fat), b.ed, b.ov, c2(b.I)]),
+    [[5000, 1000, 6000, 2000, 140, 300, 300, 2740], [5000, 0, 5000, 2000, 140, 0, 500, 2640]]);
+});
+
+test('projeção: saldo do mês e acumulado a partir do saldo em conta', async () => {
+  const r = await cenario(DADOS_MES, `projecao(2).map(x => [x.m, x.L, x.saldo, x.acum])`);
+  assert.deepEqual(r.map(x => x.map(v => (typeof v === 'number' ? c2(v) : v))),
+    [['2026-11', 2740, 3260, 4260], ['2026-12', 2640, 2360, 6620]]);
+});
+
+test('projeção com férias: despesas do mês seguinte são antecipadas', async () => {
+  const r = await cenario({ ...DADOS_MES, ferias: { '2026-11': true } }, `projecao(2).map(x => [x.adj, x.L, x.saldo, x.acum])`);
+  assert.deepEqual(r.map(x => x.map(c2)), [[2640, 5380, 620, 1620], [-2640, 0, 5000, 6620]]);
+});
