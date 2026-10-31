@@ -353,52 +353,89 @@ const soma = (g, k) => g.reduce((a, r) => a + r[k], 0);
 const abrevMoeda = v => (v < 0 ? '−' : '') + 'R$ ' +
   (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1).replace('.', ',') + 'k' : Math.round(Math.abs(v)));
 
-// Saúde financeira: olha o mês atual e os próximos 12 meses da projeção (não a média de 36 meses,
-// que dilui o aperto de agora com os meses em que as parcelas já terminaram).
-// Limites: despesa do mês atual acima da receita → no máximo 59 (Atenção); saldo acumulado negativo
-// em algum dos 12 meses → no máximo 39 (Crítica); sem orçamento variável → no máximo 79, porque a
-// projeção não teria os gastos do dia a dia.
+/* Saúde financeira, conservadora. Regra de fundo: em nenhum mês se pode gastar mais do que se recebe.
+   - Série de 12 meses a partir do mês atual (mesmo que seja anterior ao 1º mês da projeção); o saldo
+     acumulado parte do saldo inicial da conta e carrega o déficit do mês atual.
+   - Cada critério é calculado em 3, 6 e 12 meses; o curto prazo pesa mais (50%, 30%, 20%).
+   - Se os 3 meses forem piores que os 6, a nota perde a diferença (e isso é mostrado).
+   - Poupança vale 0 no horizonte com algum mês em déficit; Reserva usa o pior saldo acumulado
+     (negativo = 0); "Meses no azul" só conta mês com receita ≥ despesa e saldo acumulado ≥ 0.
+   - Limites: déficit ou saldo negativo nos próximos 3 meses → no máximo 25; nos 12 meses → no máximo 39;
+     sem orçamento variável → no máximo 79 (a projeção não teria os gastos do dia a dia). */
+const HORIZONTES = [{ h: 3, peso: 0.5 }, { h: 6, peso: 0.3 }, { h: 12, peso: 0.2 }];
+function serieSaude() {
+  const p0 = S.config.primeiroMes, ini = mIdx(mkOf(hoje())) < mIdx(p0) ? mkOf(hoje()) : p0;
+  const proj = projecao(36);
+  let acum = Number(S.config.saldoConta) || 0;
+  return Array.from({ length: 12 }, (_, i) => {
+    const m = addM(ini, i), r = proj.find(x => x.m === m);
+    const b = r || mesBase(m), L = r ? r.L : b.I;
+    acum += b.rt - L;
+    return { m, rt: b.rt, L, ef: b.ef, fat: b.fat, saldo: b.rt - L, acum };
+  });
+}
 function scoreSaude() {
-  const proj = projecao(36).slice(0, 12);
-  const rt = soma(proj, 'rt');
-  const saldo = soma(proj, 'saldo');
-  const L = soma(proj, 'L');
-  const pior = (a, f) => a.reduce((x, r) => (f(r) > f(x) ? r : x), a[0]);
-  // Comprometimento do mês mais apertado (fixos + faturas sobre a receita), não a média.
+  const serie = serieSaude();
+  const deficit = r => r.saldo < -0.005;
   const compromMes = r => (r.rt > 0 ? (r.ef + r.fat) / r.rt : (r.ef + r.fat > 0 ? 9.99 : 0));
-  const mesComprom = pior(proj, compromMes), comprom = compromMes(mesComprom);
-  const taxa = rt > 0 ? saldo / rt : 0;
-  const positivos = proj.filter(r => r.acum >= 0).length / proj.length;
-  const mediaDesp = L / proj.length;
-  const reserva = mediaDesp > 0 ? proj[proj.length - 1].acum / mediaDesp : 0;
-  const partes = [
-    { nome: 'Poupança', peso: 40, valor: clamp01(taxa / 0.40),
-      desc: `Sobra de ${pctTxt(taxa)} da receita nos próximos 12 meses (100 pontos a partir de 40%)` },
-    { nome: 'Saldo positivo', peso: 25, valor: positivos,
-      desc: `${Math.round(positivos * 100)}% dos próximos 12 meses com saldo acumulado positivo` },
-    { nome: 'Comprometimento', peso: 20, valor: clamp01((0.9 - comprom) / 0.4),
-      desc: `No mês mais apertado (${mNome(mesComprom.m)}), fixos e faturas consomem ${pctTxt(comprom)} da receita (ideal: até 50%)` },
-    { nome: 'Reserva', peso: 15, valor: clamp01(reserva / 6),
-      desc: `Saldo em 12 meses cobre ${reserva.toFixed(1).replace('.', ',')} meses de despesa (meta: 6)` }
-  ];
-  const bruto = Math.round(partes.reduce((a, p) => a + p.valor * p.peso, 0));
+  // Valor de cada critério (0 a 1) num horizonte de h meses.
+  const criterios = h => {
+    const s = serie.slice(0, h);
+    const rt = soma(s, 'rt'), taxa = rt > 0 ? soma(s, 'saldo') / rt : 0;
+    const temDeficit = s.some(deficit);
+    const azul = s.filter(r => !deficit(r) && r.acum >= 0).length / s.length;
+    const piorComp = s.reduce((x, r) => (compromMes(r) > compromMes(x) ? r : x), s[0]);
+    const piorAcum = s.reduce((x, r) => (r.acum < x.acum ? r : x), s[0]);
+    const mediaDesp = soma(s, 'L') / s.length;
+    const reserva = mediaDesp > 0 ? piorAcum.acum / mediaDesp : (piorAcum.acum >= 0 ? 6 : 0);
+    return {
+      Poupança: { v: temDeficit ? 0 : clamp01(taxa / 0.40), taxa, temDeficit },
+      'Meses no azul': { v: azul },
+      Comprometimento: { v: clamp01((0.9 - compromMes(piorComp)) / 0.4), comp: compromMes(piorComp), mes: piorComp.m },
+      Reserva: { v: piorAcum.acum < 0 ? 0 : clamp01(reserva / 6), reserva, mes: piorAcum.m }
+    };
+  };
+  const PESOS = { Poupança: 40, 'Meses no azul': 25, Comprometimento: 20, Reserva: 15 };
+  const porH = HORIZONTES.map(({ h, peso }) => {
+    const c = criterios(h);
+    return { h, peso, c, score: Math.round(Object.keys(PESOS).reduce((a, k) => a + c[k].v * PESOS[k], 0)) };
+  });
+  const H = h => porH.find(x => x.h === h);
+  const pct0 = v => Math.round(v * 100);
+  const linhaH = k => porH.map(x => `${x.h}m ${pct0(x.c[k].v)}`).join(' · ');
+  const c3 = H(3).c, c12 = H(12).c;
+  const partes = Object.keys(PESOS).map(k => ({
+    nome: k, peso: PESOS[k], valor: porH.reduce((a, x) => a + x.c[k].v * x.peso, 0),
+    desc: (k === 'Poupança' ? (c3.Poupança.temDeficit ? 'Há mês com déficit nos próximos 3 meses: sem sobra de verdade, poupança zero'
+          : `Sobra de ${pctTxt(c3.Poupança.taxa)} da receita nos próximos 3 meses (100 pontos a partir de 40%)`)
+      : k === 'Meses no azul' ? `${pct0(H(12).c[k].v)}% dos próximos 12 meses com receita cobrindo a despesa e saldo acumulado positivo`
+      : k === 'Comprometimento' ? `No mês mais apertado (${mNome(c12.Comprometimento.mes)}), fixos e faturas consomem ${pctTxt(c12.Comprometimento.comp)} da receita (ideal: até 50%)`
+      : `Pior saldo dos próximos 12 meses (${mNome(c12.Reserva.mes)}) cobre ${Math.max(0, c12.Reserva.reserva).toFixed(1).replace('.', ',')} meses de despesa (meta: 6)`)
+      + ` · por horizonte: ${linhaH(k)}`
+  }));
+  const ponderado = Math.round(porH.reduce((a, x) => a + x.score * x.peso, 0));
   const alertas = [];
+  // Curto prazo pior que o médio prazo: perde a diferença.
+  const piora = Math.max(0, H(6).score - H(3).score);
+  if (piora > 0) alertas.push(`Os próximos 3 meses (nota ${H(3).score}) estão piores que os próximos 6 (nota ${H(6).score}): a nota perde ${piora} pontos.`);
+  const bruto = Math.max(0, ponderado - piora);
   let teto = 100;
-  const mAtual = mkOf(hoje()), bAtual = mesBase(mAtual);
-  if (bAtual.I > bAtual.rt + 0.005) {
-    teto = Math.min(teto, 59);
-    alertas.push(`Em ${mNome(mAtual)}, as despesas previstas (${brl(bAtual.I)}) passam das receitas (${brl(bAtual.rt)}) em ${brl(bAtual.I - bAtual.rt)}.`);
+  const def = serie.filter(deficit);
+  if (def.length) {
+    const d = def[0], curto = serie.slice(0, 3).some(deficit);
+    teto = Math.min(teto, curto ? 25 : 39);
+    alertas.push(`Em ${mNome(d.m)}, as despesas (${brl(d.L)}) passam das receitas (${brl(d.rt)}) em ${brl(-d.saldo)}${def.length > 1 ? `; ${def.length} dos próximos 12 meses gastam mais do que recebem` : ''}.`);
   }
-  const neg = proj.find(r => r.acum < 0);
+  const neg = serie.find(r => r.acum < 0);
   if (neg) {
-    teto = Math.min(teto, 39);
+    teto = Math.min(teto, serie.slice(0, 3).some(r => r.acum < 0) ? 25 : 39);
     alertas.push(`O saldo acumulado fica negativo em ${mNome(neg.m)} (${brl(neg.acum)}).`);
   }
-  if (proj.every(r => totalOrc(r.m) <= 0)) {
+  if (serie.every(r => totalOrc(r.m) <= 0)) {
     teto = Math.min(teto, 79);
     alertas.push('Nenhum orçamento variável definido: a projeção não inclui gastos do dia a dia (mercado, transporte, lazer). Defina na aba Orçamento.');
   }
-  return { score: Math.min(bruto, teto), bruto, partes, alertas };
+  return { score: Math.min(bruto, teto), bruto, ponderado, piora, horizontes: porH.map(x => ({ h: x.h, peso: x.peso, score: x.score })), partes, alertas };
 }
 
 // Aderência ao orçado no mês: categorias com orçamento > 0.
@@ -446,15 +483,19 @@ function blocoScores(m = S.config.mesRef) {
       <div class="bar" style="height:10px"><div style="width:${(p.valor * 100).toFixed(1)}%"></div></div>
       <div class="muted">${p.desc}</div>
     </div>`).join('');
-  const limitada = sa.score < sa.bruto;
+  const limitada = sa.score < sa.ponderado;
   const alertas = sa.alertas.length ? `<div class="aviso" style="margin:0 0 10px;display:block">
       ${sa.alertas.map(a => `<p style="margin:4px 0">⚠️ ${esc(a)}</p>`).join('')}
-      ${limitada ? `<p class="muted" style="margin:6px 0 0">Pelos quatro critérios abaixo a nota seria ${sa.bruto}; os alertas acima a limitam a ${sa.score}.</p>` : ''}
+      ${limitada ? `<p class="muted" style="margin:6px 0 0">Pelos critérios abaixo a nota seria ${sa.ponderado}; com os alertas acima, fica em ${sa.score}.</p>` : ''}
     </div>` : '';
+  const corH = s => (s >= 80 ? 'var(--good)' : s >= 60 ? 'var(--accent)' : s >= 40 ? '#e0a100' : 'var(--bad)');
+  const horiz = `<div class="row" style="gap:10px;margin:0 0 12px">${sa.horizontes.map(x =>
+      `<div class="chip" style="margin:0"><span class="muted">Próximos ${x.h} meses (peso ${Math.round(x.peso * 100)}%)</span> <b style="color:${corH(x.score)}">${x.score}</b></div>`).join('')}</div>`;
   return `<section class="grid">
-    ${gauge(sa.score, 'Saúde financeira · próximos 12 meses', limitada ? 'Limitada pelos alertas abaixo' : 'Poupança, saldo, comprometimento e reserva')}
+    ${gauge(sa.score, 'Saúde financeira · 3, 6 e 12 meses', limitada ? 'Limitada pelos alertas abaixo' : 'Curto prazo pesa mais: 3 meses 50%, 6 meses 30%, 12 meses 20%')}
     ${gauge(so.score, `Aderência ao orçado · ${mNome(m)}`, so.score == null ? 'Defina o orçamento do mês para pontuar' : `Gasto sem orçamento: ${brl(so.semOrc)}`)}
-    <section class="card" style="grid-column:1/-1"><h2>Como a saúde financeira é calculada</h2>${alertas}${detalhe}</section>
+    <section class="card" style="grid-column:1/-1"><h2>Como a saúde financeira é calculada</h2>${alertas}${horiz}${detalhe}
+      <p class="muted" style="margin-top:8px">Regra de fundo: em nenhum mês se pode gastar mais do que se recebe. Cada critério é calculado nos próximos 3, 6 e 12 meses (a partir do mês atual) e o curto prazo pesa mais. Se os 3 meses forem piores que os 6, a nota perde a diferença. Mês com déficit zera a poupança daquele horizonte, e saldo acumulado negativo zera a reserva.</p></section>
   </section>`;
 }
 
