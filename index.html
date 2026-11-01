@@ -65,6 +65,7 @@ details summary::-webkit-details-marker{display:none}
 .mes-fatura button:disabled{opacity:.35;cursor:default}
 .mes-fatura input[type=month]{width:auto;max-width:190px;padding:3px 6px;font-weight:700;color:#fff;background:rgba(255,255,255,.18);border-color:transparent;color-scheme:dark}
 .mes-fatura button.voltar{font-size:12px;padding:3px 8px;margin-left:4px}
+button.ghost-tema{background:transparent;color:var(--ink);border:1px solid var(--line)}
 /* Dica do gráfico da Projeção */
 .dica{position:absolute;top:6px;z-index:1;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5;pointer-events:none;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.25)}
 .dica b{display:block;margin-bottom:2px}
@@ -153,6 +154,7 @@ function blank() {
     creditos: [],
     movConta: [],
     checklist: {},
+    planoFerias: [],
     eventuais: [],
     lancamentos: [],
     ferias: {},
@@ -373,7 +375,7 @@ const abrevMoeda = v => (v < 0 ? '−' : '') + 'R$ ' +
    - Se os 3 meses forem piores que os 6, a nota perde a diferença (e isso é mostrado).
    - Poupança vale 0 no horizonte com algum mês em déficit; Reserva usa o pior saldo acumulado
      (negativo = 0); "Meses no azul" só conta mês com receita ≥ despesa e saldo acumulado ≥ 0.
-   - Limites: déficit ou saldo negativo nos próximos 3 meses → no máximo 25; nos 12 meses → no máximo 39;
+   - Limites: déficit, saldo negativo ou falta no plano de férias nos próximos 3 meses → no máximo 25; nos 12 meses → no máximo 39;
      sem orçamento variável → no máximo 79 (a projeção não teria os gastos do dia a dia). */
 const HORIZONTES = [{ h: 3, peso: 0.5 }, { h: 6, peso: 0.3 }, { h: 12, peso: 0.2 }];
 function serieSaude() {
@@ -444,6 +446,12 @@ function scoreSaude() {
     teto = Math.min(teto, serie.slice(0, 3).some(r => r.acum < 0) ? 25 : 39);
     alertas.push(`O saldo acumulado fica negativo em ${mNome(neg.m)} (${brl(neg.acum)}).`);
   }
+  // Plano de férias: período com falta dentro dos 12 meses pesa como déficit (sobra não dá bônus).
+  const noPeriodo = (b, s) => s.some(r => mIdx(r.m) >= mIdx(b.de) && mIdx(r.m) <= mIdx(b.ate));
+  blocosFerias().filter(b => b.resultado < -0.005 && noPeriodo(b, serie)).forEach(b => {
+    teto = Math.min(teto, noPeriodo(b, serie.slice(0, 3)) ? 25 : 39);
+    alertas.push(`Plano de férias: faltam ${brl(-b.resultado)} para quitar ${nomePeriodo(b.de, b.ate)}.`);
+  });
   if (serie.every(r => totalOrc(r.m) <= 0)) {
     teto = Math.min(teto, 79);
     alertas.push('Nenhum orçamento variável definido: a projeção não inclui gastos do dia a dia (mercado, transporte, lazer). Defina na aba Orçamento.');
@@ -1090,6 +1098,7 @@ V.mesatual = () => {
   const sub = sc.score == null ? 'Defina o orçamento do mês para pontuar' : `Gasto sem orçamento: ${brl(sc.semOrc)}${emAndamento}`;
   return `
     ${faixaMes('mesVisto', m, 'mesPasso', 'mesVer')}
+    ${avisoSemReceita(m)}
     <section class="grid">
       ${ehAtual ? card('Dia do mês', `${dia} de ${diasMes}`, `${Math.round(dia / diasMes * 100)}% do mês decorrido`)
         : card('Mês', mNome(m), `${mesRelativo(m)} · ${diasMes} dias`)}
@@ -1114,6 +1123,16 @@ const cardDiferenca = b => {
   const d = Math.round((b.rt - b.I) * 100) / 100;
   return card('Receita − despesa', brl(d), d < 0 ? 'Faltam: as despesas passam das receitas' : d > 0 ? 'Sobra: as receitas cobrem as despesas' : 'Receitas e despesas empatadas', d < 0 ? 'neg' : 'pos');
 };
+// Mês com despesas e sem nenhuma receita prevista: comum quando o salário está só em Eventuais, em outro mês.
+function avisoSemReceita(m) {
+  const b = mesBase(m);
+  if (b.rt > 0.005 || b.I <= 0.005) return '';
+  const fora = S.eventuais.filter(e => e.tipo === 'Receita' && e.mes !== m);
+  return `<div class="aviso sem-receita" style="margin:0"><span>Nenhuma receita prevista em ${mNome(m)}.${fora.length
+    ? ` Há receita em Eventuais em outro mês (${mNome(fora[fora.length - 1].mes)}). Se ela se repete, como o salário, use "Repetir todo mês" na aba Eventuais.`
+    : ' Se você recebe todo mês, cadastre o valor em Recorrentes.'}</span>
+    <button class="small" onclick="ir('${fora.length ? 'eventuais' : 'recorrentes'}')">Abrir ${fora.length ? 'Eventuais' : 'Recorrentes'}</button></div>`;
+}
 const despesasTxt = b =>`Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · à vista ${brl(b.av)} · eventuais ${brl(b.ed)} · orçamento restante ${brl(b.ov)}`;
 
 V.resumo = () => {
@@ -1127,6 +1146,7 @@ V.resumo = () => {
   const estouros = S.config.categorias.filter(c => (Number(orc[c]) || 0) > 0 && execCat(c, m) > orc[c]);
   return `
     ${faixaMes('resumoMes', m, 'resumoPasso', 'resumoVer')}
+    ${avisoSemReceita(m)}
     ${blocoScores(m)}
     <section class="grid">
       ${card('Mês de referência', mNome(m), 'Altere na faixa acima')}
@@ -1941,18 +1961,44 @@ function clEntrada(key, criar) {
   if (criar && !c.itens[key]) c.itens[key] = {};
   return c.itens[key] || {};
 }
+const clMov = e => (e.contaId ? (S.movConta || []).find(x => x.id === e.contaId) : null);
+const clRemoverMov = e => { if (e.contaId) { S.movConta = (S.movConta || []).filter(x => x.id !== e.contaId); delete e.contaId; } };
 function clMarcar(i, marcado) {
   const it = clLinhas[i];
   if (!it) return;
   if (marcado) clEntrada(it.key, true).pago = true;
-  else if (S.checklist && S.checklist[clMesVisto()]) delete S.checklist[clMesVisto()].itens[it.key];
+  else if (S.checklist && S.checklist[clMesVisto()]) {
+    clRemoverMov(clEntrada(it.key));
+    delete S.checklist[clMesVisto()].itens[it.key];
+  }
   commit();
 }
 function clValor(i, valor) {
   const it = clLinhas[i], v = parseFloat(valor);
   if (!it) return;
   const e = clEntrada(it.key, true);
-  if (v >= 0) { e.pago = true; e.valor = v; } else delete e.valor;
+  if (v >= 0) {
+    e.pago = true; e.valor = v;
+    const mov = clMov(e);
+    if (mov) mov.valor = v; // a saída na Conta acompanha o valor pago
+  } else { delete e.valor; clRemoverMov(e); }
+  commit();
+}
+// O pagamento só sai da aba Conta quando o usuário pede, para não duplicar uma saída já lançada lá.
+function clLancarConta(i) {
+  const it = clLinhas[i];
+  if (!it) return;
+  const e = clEntrada(it.key, true);
+  if (!(e.valor > 0) || clMov(e)) return;
+  const id = uid();
+  S.movConta = [...(S.movConta || []), { id, data: hoje(), descricao: `Pagamento: ${it.nome} (${mNome(clMesVisto())})`, tipo: 'Saída', valor: e.valor }];
+  e.contaId = id;
+  commit();
+}
+function clDesfazerConta(i) {
+  const it = clLinhas[i];
+  if (!it) return;
+  clRemoverMov(clEntrada(it.key, true));
   commit();
 }
 // "Corrigir" leva ao lançamento: o valor previsto é recalculado e a diferença some.
@@ -2003,7 +2049,10 @@ V.checklist = () => {
     const e = ent(it), d = clDif(it, e), temDif = d !== null && Math.abs(d) >= 0.005;
     return `<tr class="cl-item">
       <td>${esc(it.nome)}<div style="font-size:13px;margin-top:2px">${situacao(it)}</div>
-        ${temDif ? `<button class="small" style="margin-top:4px;white-space:normal" onclick="clCorrigir(${i})">Corrigir lançamento</button>` : ''}</td>
+        ${temDif ? `<button class="small" style="margin-top:4px;white-space:normal" onclick="clCorrigir(${i})">Corrigir lançamento</button> ` : ''}
+        ${e.pago && e.valor > 0 ? (clMov(e)
+          ? `<div class="muted" style="margin-top:4px">✓ Saída lançada na Conta <button class="small ghost-tema" onclick="clDesfazerConta(${i})">Desfazer</button></div>`
+          : `<button class="small" style="margin-top:4px;white-space:normal" onclick="clLancarConta(${i})">Lançar saída na Conta</button>`) : ''}</td>
       <td class="num">${brl(it.previsto)}</td>
       <td style="text-align:center"><input type="checkbox" id="clPago${i}" aria-label="Pago: ${esc(it.nome)}" ${e.pago ? 'checked' : ''} onchange="clMarcar(${i}, this.checked)"></td>
       <td><input type="number" id="clValor${i}" step="0.01" min="0" style="width:82px;padding:8px 6px;text-align:right" aria-label="Valor pago: ${esc(it.nome)}" value="${e.valor != null ? e.valor : ''}" onchange="clValor(${i}, this.value)"></td>
@@ -2028,7 +2077,7 @@ V.checklist = () => {
         <thead><tr><th>Item e situação</th><th class="num">Lançado</th><th>Pago</th><th>Valor pago</th></tr></thead>
         <tbody>${corpo}</tbody>
       </table></div>
-      <p class="muted" style="margin-top:10px">Marque o que foi pago e digite o valor que saiu de verdade, olhando o banco. Se não bater, corrija o lançamento: a diferença some sozinha. Gastos em Débito, Pix e Dinheiro não aparecem aqui, porque já saíram da conta. Conferir aqui não altera a aba Conta.</p>
+      <p class="muted" style="margin-top:10px">Marque o que foi pago e digite o valor que saiu de verdade, olhando o banco. Se não bater, corrija o lançamento: a diferença some sozinha. Gastos em Débito, Pix e Dinheiro não aparecem aqui, porque já saíram da conta. O pagamento só entra na aba Conta se você clicar em "Lançar saída na Conta"; não clique se já lançou essa saída lá.</p>
     </section>
     <section class="card" id="clFora"><h2>Ficou algum gasto de ${mNome(m)} de fora?</h2>
       <div class="row">
@@ -2052,6 +2101,211 @@ V.checklist = () => {
     </section>`;
 };
 
+/* ---------- calendário: vencimentos e parcelas ----------
+   A fatura de um mês vence no mês seguinte, no dia cadastrado para o cartão (S.config.vencimentos):
+   a fatura de outubro, com vencimento dia 10, vence em 10 de novembro. */
+const vencCfg = () => S.config.vencimentos || {};
+function dataVenc(mes, dia) {
+  const ultimo = new Date(Number(mes.slice(0, 4)), Number(mes.slice(5, 7)), 0).getDate();
+  return `${mes}-${pad(Math.min(dia, ultimo))}`;
+}
+const diasEntre = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 864e5);
+function vencimentos(d = hoje()) {
+  return S.config.cartoes.filter(c => vencCfg()[c]).map(c => {
+    const dia = vencCfg()[c], m0 = mkOf(d);
+    const mesVenc = dataVenc(m0, dia) >= d ? m0 : addM(m0, 1);
+    const mesFatura = addM(mesVenc, -1), data = dataVenc(mesVenc, dia);
+    const e = (clDoMes(mesFatura).itens || {})['fat:' + c] || {};
+    return { cartao: c, data, mesFatura, valor: fatCartao(c, mesFatura), pago: !!e.pago, faltam: diasEntre(d, data) };
+  }).sort((a, b) => a.data.localeCompare(b.data));
+}
+// Aviso geral: fatura não paga que vence em até 3 dias.
+function avisoVencimento(d = hoje()) {
+  const perto = vencimentos(d).filter(v => v.faltam <= 3 && v.valor > 0.005 && !v.pago);
+  if (!perto.length) return '';
+  const quando = v => (v.faltam === 0 ? 'vence hoje' : v.faltam === 1 ? 'vence amanhã' : `vence em ${v.faltam} dias`);
+  return `<div class="aviso" id="avisoVencimento"><span>${perto.map(v => `Fatura ${esc(v.cartao)} ${quando(v)}: ${brl(v.valor)}.`).join(' ')}</span>
+    <button class="small" onclick="ir('calendario')">Ver calendário</button></div>`;
+}
+function salvarVenc(e) {
+  e.preventDefault();
+  const f = e.target.elements, dia = parseInt(f.dia.value, 10);
+  if (!(dia >= 1 && dia <= 31)) return alert('Informe um dia entre 1 e 31.');
+  S.config.vencimentos = { ...vencCfg(), [f.cartao.value]: dia };
+  commit();
+}
+function removerVenc(i) {
+  const c = S.config.cartoes[i], v = { ...vencCfg() };
+  delete v[c];
+  S.config.vencimentos = v;
+  commit();
+}
+// Compras que ainda têm parcelas a partir do mês m0, das que terminam primeiro às últimas.
+function parcelasEmAberto(m0) {
+  return S.parcelados.filter(p => mIdx(ultimaParcela(p)) >= mIdx(m0)).map(p => {
+    const v = valorParcela(p), inicio = mkOf(p.inicio), fim = ultimaParcela(p);
+    const restantes = mIdx(fim) - Math.max(mIdx(m0), mIdx(inicio)) + 1;
+    const atual = mIdx(m0) - mIdx(inicio) + 1;
+    return { descricao: p.descricao, cartao: p.cartao, parcela: v, atual: atual >= 1 ? atual : null, total: p.parcelas, inicio, fim, restantes, faltaPagar: Math.round(restantes * v * 100) / 100 };
+  }).sort((a, b) => a.fim.localeCompare(b.fim) || a.descricao.localeCompare(b.descricao));
+}
+// Total de parcelas em cada mês e quanto fica livre em relação ao mês anterior.
+function liberacaoParcelas(m0, n = 12) {
+  const totalDe = m => S.parcelados.filter(p => parcelaAtiva(p, m)).reduce((a, p) => a + valorParcela(p), 0);
+  return Array.from({ length: n }, (_, i) => {
+    const m = addM(m0, i), ant = addM(m, -1), total = totalDe(m), dif = total - totalDe(ant);
+    return { m, total, libera: dif < -0.005 ? -dif : 0, entra: dif > 0.005 ? dif : 0,
+      terminaram: S.parcelados.filter(p => ultimaParcela(p) === ant).map(p => p.descricao) };
+  });
+}
+
+V.calendario = () => {
+  const m0 = mkOf(hoje()), venc = vencimentos(), abertas = parcelasEmAberto(m0), lib = liberacaoParcelas(m0);
+  const totalFalta = abertas.reduce((a, p) => a + p.faltaPagar, 0);
+  const proxLibera = lib.slice(1).find(x => x.libera > 0);
+  return `
+    <section class="grid" id="calResumo">
+      ${card('Parcelas neste mês', brl(lib[0].total), `${abertas.filter(p => p.atual).length} compra(s) em andamento`)}
+      ${card('Falta pagar em parcelas', brl(totalFalta), 'Somando todas as parcelas restantes')}
+      ${card('Próxima folga', proxLibera ? brl(proxLibera.libera) : '—', proxLibera ? `A menos por mês a partir de ${mNome(proxLibera.m)}` : 'Nenhuma parcela termina nos próximos 12 meses')}
+    </section>
+    <section class="card" id="calVenc"><h2>Próximos vencimentos</h2>
+      ${venc.length ? `<div class="scroll"><table>
+        <thead><tr><th>Cartão</th><th>Vence em</th><th>Fatura</th><th class="num">Valor</th><th>Situação</th></tr></thead>
+        <tbody>${venc.map(v => `<tr><td>${esc(v.cartao)}</td><td>${fmtData(v.data)}</td><td>${mNome(v.mesFatura)}</td><td class="num">${brl(v.valor)}</td>
+          <td>${v.pago ? '<span class="pos">✓ Paga</span>' : v.faltam === 0 ? '⚠️ Vence hoje' : `Faltam ${v.faltam} dia(s)`}</td></tr>`).join('')}</tbody>
+      </table></div>` : ''}
+      <p class="muted" style="margin-top:10px">${venc.length ? 'A fatura de um mês vence no mês seguinte. "Paga" vem do Check list. O app avisa 3 dias antes de cada vencimento.' : 'Cadastre o dia de vencimento de cada cartão em Configurações para ver as datas aqui e receber um aviso 3 dias antes.'}</p>
+      ${venc.length ? '' : `<div class="row"><button class="small" onclick="ir('config')">Abrir Configurações</button></div>`}
+    </section>
+    <section class="card" id="calLibera"><h2>Quanto de parcela em cada mês</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Mês</th><th class="num">Parcelas no mês</th><th class="num">Mudança</th><th>O que terminou no mês anterior</th></tr></thead>
+        <tbody>${lib.map(x => `<tr><td>${mNome(x.m)}</td><td class="num">${brl(x.total)}</td>
+          <td class="num">${x.libera ? `<span class="pos">${brl(x.libera)} a menos</span>` : x.entra ? `<span class="neg">${brl(x.entra)} a mais</span>` : '—'}</td>
+          <td>${x.terminaram.length ? x.terminaram.map(esc).join(', ') : '<span class="muted">—</span>'}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <p class="muted" style="margin-top:10px">Só compras parceladas, pelo valor das parcelas, sem descontar estornos e abatimentos.</p>
+    </section>
+    <section class="card" id="calCompras"><h2>Quando cada compra termina</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Compra</th><th>Parcela</th><th class="num">Valor</th><th>Última</th><th class="num">Falta pagar</th></tr></thead>
+        <tbody>${abertas.map(p => `<tr><td>${esc(p.descricao)}<div class="muted">${esc(p.cartao)}</div></td>
+          <td>${p.atual ? `${p.atual}/${p.total}` : `Começa em ${mNome(p.inicio)}`}</td><td class="num">${brl(p.parcela)}</td><td>${mNome(p.fim)}</td><td class="num">${brl(p.faltaPagar)}</td></tr>`).join('')
+          || '<tr><td colspan="5" class="muted">Nenhuma compra parcelada em aberto.</td></tr>'}</tbody>
+      </table></div>
+    </section>`;
+};
+
+/* ---------- plano de férias ----------
+   O usuário informa cada valor que recebe e quais meses ele fica responsável por quitar. Valores cujos
+   meses se sobrepõem formam um bloco: os gastos dos meses são unificados e comparados com a soma dos valores.
+   Não altera a Projeção; período com falta entra como alerta e limite na Saúde financeira.
+   S.planoFerias = [{ id, descricao, valor, de: 'aaaa-mm', ate: 'aaaa-mm' }]. */
+function blocosFerias() {
+  const itens = [...(S.planoFerias || [])].sort((a, b) => a.de.localeCompare(b.de) || a.ate.localeCompare(b.ate));
+  const blocos = [];
+  itens.forEach(it => {
+    const ult = blocos[blocos.length - 1];
+    if (ult && mIdx(it.de) <= mIdx(ult.ate)) {
+      ult.itens.push(it);
+      if (mIdx(it.ate) > mIdx(ult.ate)) ult.ate = it.ate;
+    } else blocos.push({ de: it.de, ate: it.ate, itens: [it] });
+  });
+  blocos.forEach(b => {
+    b.meses = Array.from({ length: mIdx(b.ate) - mIdx(b.de) + 1 }, (_, i) => {
+      const m = addM(b.de, i), x = mesBase(m);
+      return { m, fixas: x.ef, faturas: x.fat, outros: x.av + x.ed, orcamento: x.ov, total: x.I, receitas: x.rt };
+    });
+    b.valor = b.itens.reduce((a, i) => a + i.valor, 0);
+    b.gastos = b.meses.reduce((a, x) => a + x.total, 0);
+    b.receitas = b.meses.reduce((a, x) => a + x.receitas, 0);
+    b.resultado = Math.round((b.valor - b.gastos) * 100) / 100;
+  });
+  return blocos;
+}
+let pfEdit = null;
+function editarPF(id) {
+  pfEdit = id;
+  render();
+  const form = document.querySelector('form[onsubmit="salvarPF(event)"]');
+  if (form) form.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+function cancelarPF() { pfEdit = null; render(); }
+function dadosPF(f) {
+  const valor = parseFloat(f.valor.value), descricao = f.descricao.value.trim(), de = f.de.value, ate = f.ate.value || de;
+  if (!descricao) return alert('Informe a descrição.'), null;
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.'), null;
+  if (!de) return alert('Informe o primeiro mês que este valor cobre.'), null;
+  if (mIdx(ate) < mIdx(de)) return alert('O último mês não pode ser anterior ao primeiro.'), null;
+  return { descricao, valor, de, ate };
+}
+function addPF(e) {
+  e.preventDefault();
+  const d = dadosPF(e.target.elements);
+  if (!d) return;
+  S.planoFerias = [...(S.planoFerias || []), { id: uid(), ...d }];
+  commit();
+}
+function salvarPF(e) {
+  e.preventDefault();
+  const it = (S.planoFerias || []).find(x => x.id === pfEdit);
+  if (!it) { pfEdit = null; return render(); }
+  const d = dadosPF(e.target.elements);
+  if (!d) return;
+  Object.assign(it, d);
+  pfEdit = null;
+  commit();
+}
+const nomePeriodo = (de, ate) => (de === ate ? mNome(de) : `${mNome(de)} a ${mNome(ate)}`);
+const textoResultado = v => (v < 0 ? `Falta ${brl(-v)}` : v > 0 ? `Sobra ${brl(v)}` : 'Fica zerado');
+
+V.ferias = () => {
+  const blocos = blocosFerias();
+  const it = pfEdit ? (S.planoFerias || []).find(x => x.id === pfEdit) : null;
+  if (pfEdit && !it) pfEdit = null;
+  const padrao = addM(mkOf(hoje()), 1);
+  const totalValor = blocos.reduce((a, b) => a + b.valor, 0), totalGastos = blocos.reduce((a, b) => a + b.gastos, 0);
+  const final = blocos.reduce((a, b) => a + b.resultado, 0);
+  const faltas = blocos.filter(b => b.resultado < 0);
+  const quadros = blocos.map((b, n) => `
+    <section class="card pf-bloco"><h2>${blocos.length > 1 ? `Bloco ${n + 1}: ` : ''}${nomePeriodo(b.de, b.ate)}</h2>
+      <div class="big ${b.resultado < 0 ? 'neg' : 'pos'}">${textoResultado(b.resultado)}</div>
+      <p class="muted">${brl(b.valor)} informados − ${brl(b.gastos)} de gastos${b.meses.length > 1 ? ' unificados' : ''}.
+        ${b.resultado < 0 ? `Para fechar, guarde ${brl(-b.resultado)} antes de ${mNome(b.de)}.` : ''}</p>
+      <div class="scroll pf-valores" style="margin-top:10px"><table>
+        <thead><tr><th>Valor informado</th><th class="num">Valor</th><th></th></tr></thead>
+        <tbody>${b.itens.map(x => `<tr><td>${esc(x.descricao)}<div class="muted">Cobre ${nomePeriodo(x.de, x.ate)}</div></td><td class="num pos">${brl(x.valor)}</td>
+          <td class="num"><button class="small" onclick="editarPF('${x.id}')">Editar</button>
+          <button class="danger small" onclick="excluir('planoFerias','${x.id}')">Excluir</button></td></tr>`).join('')}</tbody>
+      </table></div>
+      <div class="scroll" style="margin-top:12px"><table>
+        <thead><tr><th>Mês</th><th class="num">Gastos</th><th class="num">Fixas</th><th class="num">Faturas</th><th class="num">À vista e eventuais</th><th class="num">Orçamento restante</th></tr></thead>
+        <tbody>${b.meses.map(x => `<tr><td>${mNome(x.m)}</td><td class="num"><strong>${brl(x.total)}</strong></td><td class="num">${brl(x.fixas)}</td><td class="num">${brl(x.faturas)}</td><td class="num">${brl(x.outros)}</td><td class="num">${brl(x.orcamento)}</td></tr>`).join('')}</tbody>
+        ${b.meses.length > 1 ? `<tfoot><tr><th>Gastos unificados</th><th class="num">${brl(b.gastos)}</th><th colspan="4"></th></tr></tfoot>` : ''}
+      </table></div>
+      ${b.receitas > 0.005 ? `<p class="muted" style="margin-top:8px">Há ${brl(b.receitas)} de receitas já previstas nesses meses (Recorrentes e Eventuais). Elas não entram nesta conta: se o salário for substituído pelas férias, não some os dois.</p>` : ''}
+    </section>`).join('');
+  return `
+    <section class="card"><h2>${it ? 'Editar valor' : 'Novo valor das férias'}</h2>
+      <form class="fields" onsubmit="${it ? 'salvarPF' : 'addPF'}(event)">
+        <label>Descrição<input type="text" name="descricao" value="${it ? esc(it.descricao) : ''}" placeholder="Ex.: férias + 1/3" required></label>
+        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" value="${it ? it.valor : ''}" required></label>
+        <label>Cobre de<input type="month" name="de" value="${it ? it.de : padrao}" required></label>
+        <label>Até (se for mais de um mês)<input type="month" name="ate" value="${it ? it.ate : padrao}"></label>
+        <button>${it ? 'Salvar alterações' : 'Adicionar'}</button>
+        ${it ? '<button type="button" class="small" onclick="cancelarPF()">Cancelar</button>' : ''}
+      </form>
+      <p class="muted" style="margin-top:10px">Informe cada valor que você vai receber e quais meses ele fica responsável por quitar, olhando o aviso de férias e o holerite. Se o valor cobre mais de um mês, os gastos desses meses são somados. Valores que cobrem o mesmo mês entram na mesma conta.</p>
+    </section>
+    ${blocos.length ? `<section class="grid" id="pfResumo">
+      ${card('Total informado', brl(totalValor), `${(S.planoFerias || []).length} valor(es)`)}
+      ${card('Gastos dos meses cobertos', brl(totalGastos), `${blocos.reduce((a, b) => a + b.meses.length, 0)} mês(es)`)}
+      ${card('Resultado final', textoResultado(Math.round(final * 100) / 100), faltas.length ? `${faltas.length} período(s) com falta: veja abaixo quanto guardar` : 'Os valores cobrem os gastos dos meses informados', final < 0 || faltas.length ? 'neg' : 'pos')}
+    </section>${quadros}` : '<section class="card"><p class="muted">Nenhum valor informado. Adicione o primeiro acima para ver quanto sobra ou falta.</p></section>'}
+    <section class="card"><p class="muted">Este plano não altera a Projeção. Um período com falta reduz a nota de Saúde financeira e aparece nos alertas dela. Os gastos vêm dos seus lançamentos e do orçamento, então mudam quando você lança algo novo nesses meses.</p></section>`;
+};
+
 let evEdit = null;
 function editarEv(id) {
   evEdit = id;
@@ -2063,6 +2317,14 @@ function editarEv(id) {
   }
 }
 function cancelarEv() { evEdit = null; render(); }
+// Transforma uma receita eventual em recorrente, a partir do mês dela.
+function eventualRepetir(id) {
+  const e = S.eventuais.find(x => x.id === id);
+  if (!e || !confirm(`Transformar "${e.descricao}" em receita recorrente de ${brl(e.valor)} por mês, a partir de ${mNome(e.mes)}? O evento sai de Eventuais e passa para Recorrentes.`)) return;
+  S.recorrentes.push({ id: uid(), descricao: e.descricao, grupo: 'Receita', cartao: '', prox: false, categoria: 'Outros', valor: e.valor, inicio: e.mes + '-01', fim: '' });
+  S.eventuais = S.eventuais.filter(x => x.id !== id);
+  commit();
+}
 function salvarEv(e) {
   e.preventDefault();
   const f = e.target.elements, it = S.eventuais.find(x => x.id === evEdit);
@@ -2079,7 +2341,7 @@ V.eventuais = () => {
   const linhas = lista.map(e => `<tr>
       <td>${mNome(e.mes)} <span class="muted">(${mesRelativo(e.mes)})</span></td><td>${esc(e.tipo)}</td><td>${esc(e.descricao)}</td>
       <td class="num ${e.tipo === 'Receita' ? 'pos' : 'neg'}">${brl(e.valor)}</td>
-      <td class="num"><button class="small" onclick="editarEv('${e.id}')">Editar</button>
+      <td class="num">${e.tipo === 'Receita' ? `<button class="small" onclick="eventualRepetir('${e.id}')">Repetir todo mês</button> ` : ''}<button class="small" onclick="editarEv('${e.id}')">Editar</button>
       <button class="danger small" onclick="excluir('eventuais','${e.id}')">Excluir</button></td>
     </tr>`).join('') || `<tr><td colspan="5" class="muted">Nenhum evento.</td></tr>`;
   const it = evEdit ? S.eventuais.find(x => x.id === evEdit) : null;
@@ -2171,6 +2433,13 @@ V.config = () => {
         <button>Renomear</button>
       </form>` : ''}
       <p class="muted">Renomear troca o nome em todas as compras, recorrentes, lançamentos e ajustes desse cartão, sem perder nada.</p>
+      ${c.cartoes.length ? `<form class="fields" style="margin-top:10px" onsubmit="salvarVenc(event)">
+        <label>Vencimento da fatura: cartão<select name="cartao">${opts(c.cartoes)}</select></label>
+        <label>Dia do vencimento<input type="number" step="1" min="1" max="31" name="dia" required></label>
+        <button>Salvar vencimento</button>
+      </form>
+      <div id="listaVenc" style="margin-top:10px">${c.cartoes.map((x, i) => (vencCfg()[x] ? `<span class="chip">${esc(x)}: dia ${vencCfg()[x]} <button class="small danger" onclick="removerVenc(${i})">×</button></span>` : '')).join('')}</div>
+      <p class="muted">A fatura de um mês vence no mês seguinte, nesse dia. As datas aparecem na aba Calendário.</p>` : ''}
     </section>
     <section class="card"><h2>Categorias</h2>
       <div style="margin-bottom:12px">${cats}</div>
@@ -2205,10 +2474,10 @@ function avisoBackup() {
 
 function render() {
   const navX = $('abas').scrollLeft;
-  $('aviso').innerHTML = avisoBackup() + avisoChecklist();
+  $('aviso').innerHTML = avisoBackup() + avisoVencimento() + avisoChecklist();
   $('abas').innerHTML = [
     ['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'],
-    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['checklist', 'Check list'],
+    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['ferias', 'Férias'],
     ['eventuais', 'Eventuais'], ['patrimonio', 'Patrimônio'], ['config', 'Configurações']
   ].map(([k, t]) => `<button class="tab ${k === aba ? 'on' : ''}" onclick="ir('${k}')">${t}</button>`).join('');
   // Preserva as posições de rolagem (tabelas largas e barra de abas) entre redesenhos.
@@ -2341,7 +2610,7 @@ function calcUsar() {
 const RASC_KEY = 'cf-rascunhos';
 // Formulários de edição (salvarLanc, salvarRec, salvarEv) também ficam sem rascunho: eles servem para qualquer item,
 // e um rascunho de outra edição sobrescreveria os dados do item aberto.
-const SEM_RASCUNHO = /salvarClientId|trocarSenha|conectar|senha|^salvar(Lanc|Rec|Ev)\(/i;
+const SEM_RASCUNHO = /salvarClientId|trocarSenha|conectar|senha|^salvar(Lanc|Rec|Ev|PF)\(/i;
 let ultimoEnvio = null;
 document.addEventListener('submit', e => {
   const k = e.target && e.target.getAttribute && e.target.getAttribute('onsubmit');
@@ -2471,6 +2740,7 @@ function delLista(lista, i) {
     : S.lancamentos.some(l => l.categoria === nome) || S.recorrentes.some(r => r.categoria === nome) ||
       S.parcelados.some(p => p.categoria === nome);
   if (usado) return alert(`"${nome}" está em uso. Para trocar o nome sem perder nada, use "Renomear".`);
+  if (lista === 'cartoes' && S.config.vencimentos) delete S.config.vencimentos[nome];
   S.config[lista].splice(i, 1);
   commit();
 }
@@ -2489,6 +2759,7 @@ function renomearLista(e, lista) {
   troca(S.parcelados); troca(S.recorrentes); troca(S.lancamentos);
   if (lista === 'cartoes') {
     troca(S.creditos);
+    if (S.config.vencimentos && S.config.vencimentos[antigo]) { S.config.vencimentos[novo] = S.config.vencimentos[antigo]; delete S.config.vencimentos[antigo]; }
     // O check list guarda as faturas pelo nome do cartão.
     Object.values(S.checklist || {}).forEach(c => {
       if (c.itens && c.itens['fat:' + antigo]) { c.itens['fat:' + novo] = c.itens['fat:' + antigo]; delete c.itens['fat:' + antigo]; }
@@ -2759,7 +3030,7 @@ function importarPlanilhaLegada(todas) {
           cartoes: cartoes.length ? cartoes : S.config.cartoes,
           categorias: categorias.length ? categorias : S.config.categorias
         },
-        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, eventuais, lancamentos, ferias
+        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, planoFerias: [], eventuais, lancamentos, ferias
       };
       commit();
       alert(`Planilha importada: ${recorrentes.length} recorrentes, ${parcelados.length} parcelamento(s), ${eventuais.length} evento(s) e ${lancamentos.length} lançamento(s).`);
@@ -3070,17 +3341,28 @@ function montarPlanilha() {
   abas.push({ nome: 'Conta', linhas: ct });
 
   // Check list: o que foi conferido em cada mês. Os itens vão por nome, porque os ids mudam ao importar.
-  const clp = [['Mês do check list', 'Tipo', 'Item', 'Pago (1 = sim)', 'Valor pago']];
+  const clp = [['Mês do check list', 'Tipo', 'Item', 'Pago (1 = sim)', 'Valor pago', 'Saída na Conta']];
   Object.entries(S.checklist || {}).forEach(([m, x]) => {
     Object.entries(x.itens || {}).forEach(([k, e]) => {
       const tipo = k.slice(0, k.indexOf(':')), ref = k.slice(k.indexOf(':') + 1);
       const fonte = tipo === 'rec' ? S.recorrentes : tipo === 'ev' ? S.eventuais : tipo === 'lanc' ? S.lancamentos : null;
       const nome = tipo === 'fat' ? ref : (fonte.find(i => i.id === ref) || {}).descricao;
-      if (nome) clp.push([N(serialMes(m), FMT_MES), tipo, nome, e.pago ? 1 : 0, e.valor != null ? N(e.valor, FMT_VALOR) : null]);
+      const mov = e.contaId ? (S.movConta || []).find(i => i.id === e.contaId) : null;
+      if (nome) clp.push([N(serialMes(m), FMT_MES), tipo, nome, e.pago ? 1 : 0, e.valor != null ? N(e.valor, FMT_VALOR) : null, mov ? mov.descricao : null]);
     });
-    if (x.fora) clp.push([N(serialMes(m), FMT_MES), 'fora', x.fora, null, null]);
+    if (x.fora) clp.push([N(serialMes(m), FMT_MES), 'fora', x.fora, null, null, null]);
   });
   abas.push({ nome: 'Checklist', linhas: clp });
+
+  // Dia de vencimento de cada cartão.
+  const vc = [['Cartão', 'Dia do vencimento']];
+  S.config.cartoes.forEach(x => { if (vencCfg()[x]) vc.push([x, vencCfg()[x]]); });
+  abas.push({ nome: 'Vencimentos', linhas: vc });
+
+  // Plano de férias: cada valor e os meses que ele cobre.
+  const pf = [['Descrição', 'Valor', 'Cobre de', 'Até']];
+  (S.planoFerias || []).forEach(x => pf.push([x.descricao, N(x.valor, FMT_VALOR), N(serialMes(x.de), FMT_MES), N(serialMes(x.ate), FMT_MES)]));
+  abas.push({ nome: 'Plano_Ferias', linhas: pf });
 
   // Orçamento por mês (valores editáveis)
   const om = [
@@ -3277,7 +3559,19 @@ function interpretarNova(g) {
       : tipo === 'ev' ? eventuais.find(x => x.mes === m && x.descricao === nome)
       : tipo === 'lanc' ? lancamentos.find(x => mkOf(x.data) === m && x.descricao === nome) : null;
     const key = tipo === 'fat' ? 'fat:' + nome : achado ? `${tipo}:${achado.id}` : null;
-    if (key) c.itens[key] = { pago: Number(r[3]) === 1, ...(r[4] != null && r[4] !== '' ? { valor: Number(r[4]) } : {}) };
+    if (!key) return;
+    const mov = r[5] ? movConta.find(x => x.descricao === String(r[5])) : null;
+    c.itens[key] = { pago: Number(r[3]) === 1, ...(r[4] != null && r[4] !== '' ? { valor: Number(r[4]) } : {}), ...(mov ? { contaId: mov.id } : {}) };
+  });
+
+  // Vencimentos (aba opcional).
+  const vencimentosCfg = {};
+  (g.Vencimentos || []).slice(1).filter(r => r[0] && r[1]).forEach(r => { vencimentosCfg[String(r[0])] = Number(r[1]); });
+
+  // Plano de férias (aba opcional).
+  const planoFerias = (g.Plano_Ferias || []).slice(1).filter(r => r[0] && r[1] && r[2]).map(r => {
+    const de = mkOf(isoData(r[2]));
+    return { id: uid(), descricao: String(r[0]), valor: Number(r[1]) || 0, de, ate: mkOf(isoData(r[3])) || de };
   });
 
   const om = g.Orcamento_Meses;
@@ -3312,11 +3606,11 @@ function interpretarNova(g) {
 
   return {
     config: {
-      ...S.config, saldoConta, primeiroMes, mesRef,
+      ...S.config, saldoConta, primeiroMes, mesRef, vencimentos: vencimentosCfg,
       cartoes: cartoes.length ? cartoes : S.config.cartoes,
       categorias: categorias.length ? categorias : S.config.categorias
     },
-    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, eventuais, lancamentos, ferias, patrimonio
+    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, planoFerias, eventuais, lancamentos, ferias, patrimonio
   };
 }
 
