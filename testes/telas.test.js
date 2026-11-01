@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { abrirApp, fecharNavegador, definirDados, avaliar } = require('./lib');
 
 const ABAS = ['resumo', 'mesatual', 'projecao', 'simulador', 'orcamento', 'lancamentos', 'conta', 'recorrentes', 'parcelas',
-  'faturas', 'checklist', 'eventuais', 'patrimonio', 'config'];
+  'faturas', 'checklist', 'calendario', 'ferias', 'eventuais', 'patrimonio', 'config'];
 
 let pg;
 before(async () => { pg = await abrirApp(); });
@@ -864,6 +864,262 @@ test('Calculadora: envia o resultado para o valor pago do check list', async () 
   assert.match(await pg.innerText('#calcUsar'), /Valor pago: Luz/);
   await pg.click('#calcUsar');
   assert.match(await linhaCheck(i), /✓ Confere/);
+});
+
+/* ---------- plano de férias ---------- */
+// Fixo de 1.000 todo mês; parcela de 1.200 só no mês +1. Gastos: +1 = 2.200; +2 = 1.000; +4 = 1.000.
+const dadosFerias = m => ({ config: { cartoes: ['Nubank'], primeiroMes: m },
+  recorrentes: [{ id: 'f', descricao: 'Aluguel', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 1000, inicio: '2020-01-01', fim: '' }],
+  parcelados: [{ id: 'p', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'TV', categoria: 'Outros', valorTotal: 1200, parcelas: 1, inicio: addMesStr(m, 1) }] });
+const addPFTela = async (f, descricao, valor, de, ate) => {
+  await pg.fill(`${f} [name=descricao]`, descricao);
+  await pg.fill(`${f} [name=valor]`, String(valor));
+  await pg.fill(`${f} [name=de]`, de);
+  await pg.fill(`${f} [name=ate]`, ate);
+  await pg.click(`${f} button:not([type=button])`);
+};
+
+test('Férias: um valor pode cobrir mais de um mês, e os gastos são unificados', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, dadosFerias(m));
+  await pg.evaluate(() => { pfEdit = null; ir('ferias'); });
+  assert.match(await pg.innerText('#conteudo'), /Nenhum valor informado/);
+  await addPFTela('form[onsubmit="addPF(event)"]', 'Férias + 1/3', 4000, addMesStr(m, 1), addMesStr(m, 2));
+  const b = await avaliar(pg, `blocosFerias()`);
+  assert.equal(b.length, 1);
+  assert.deepEqual(b[0].meses.map(x => [x.m, x.total]), [[addMesStr(m, 1), 2200], [addMesStr(m, 2), 1000]]);
+  // 4.000 − (2.200 + 1.000) = 800 de sobra.
+  assert.deepEqual([b[0].valor, b[0].gastos, b[0].resultado], [4000, 3200, 800]);
+  const txt = await pg.innerText('#conteudo');
+  assert.match(txt, /Gastos unificados/i);
+  assert.match(txt, /Sobra R\$\s*800,00/);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Férias: valores do mesmo mês entram na mesma conta; períodos separados têm conta própria', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, { ...dadosFerias(m), planoFerias: [
+    { id: 'c', descricao: 'Outro', valor: 800, de: addMesStr(m, 4), ate: addMesStr(m, 4) },
+    { id: 'b', descricao: 'Saldo de salário', valor: 500, de: addMesStr(m, 2), ate: addMesStr(m, 2) },
+    { id: 'a', descricao: 'Férias + 1/3', valor: 2000, de: addMesStr(m, 1), ate: addMesStr(m, 2) }] });
+  await pg.evaluate(() => { pfEdit = null; ir('ferias'); });
+  const b = await avaliar(pg, `blocosFerias()`);
+  assert.deepEqual(b.map(x => [x.de, x.ate, x.itens.length, x.valor, x.gastos, x.resultado]), [
+    // 2.000 + 500 − 3.200 = −700: falta. O mês +2 não é contado duas vezes.
+    [addMesStr(m, 1), addMesStr(m, 2), 2, 2500, 3200, -700],
+    // 800 − 1.000 = −200.
+    [addMesStr(m, 4), addMesStr(m, 4), 1, 800, 1000, -200]]);
+  assert.match(await pg.innerText('#pfResumo'), /Resultado final\s*Falta R\$\s*900,00/i);
+  const blocos = await pg.$$eval('.pf-bloco', s => s.map(x => x.innerText));
+  assert.equal(blocos.length, 2);
+  assert.match(blocos[0], /Falta R\$\s*700,00/);
+  assert.match(blocos[0], /guarde R\$\s*700,00 antes de/);
+  // A aba não altera a Projeção.
+  const com = await avaliar(pg, `projecao(6).map(r => r.acum)`);
+  await pg.evaluate(() => { S.planoFerias = []; });
+  assert.deepEqual(await avaliar(pg, `projecao(6).map(r => r.acum)`), com);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Férias: receitas previstas nos meses cobertos são avisadas, mas não entram na conta', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  const d = dadosFerias(m);
+  d.recorrentes.push({ id: 's', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 3000, inicio: '2020-01-01', fim: '' });
+  await definirDados(pg, { ...d, planoFerias: [{ id: 'a', descricao: 'Férias', valor: 1000, de: addMesStr(m, 2), ate: addMesStr(m, 2) }] });
+  await pg.evaluate(() => { pfEdit = null; ir('ferias'); });
+  assert.equal(await avaliar(pg, `blocosFerias()[0].resultado`), 0);
+  const txt = await pg.innerText('.pf-bloco');
+  assert.match(txt, /Fica zerado/);
+  assert.match(txt, /R\$\s*3\.000,00 de receitas já previstas/);
+});
+
+test('Férias: editar traz os dados do valor, valida os meses e permite excluir', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, { ...dadosFerias(m), planoFerias: [
+    { id: 'a', descricao: 'Férias', valor: 2000, de: addMesStr(m, 1), ate: addMesStr(m, 2) },
+    { id: 'b', descricao: 'Bônus', valor: 300, de: addMesStr(m, 4), ate: addMesStr(m, 4) }] });
+  await pg.evaluate(() => { pfEdit = null; ir('ferias'); });
+  const ed = 'form[onsubmit="salvarPF(event)"]';
+  await pg.click(`button[onclick="editarPF('a')"]`);
+  assert.deepEqual([await pg.inputValue(`${ed} [name=descricao]`), await pg.inputValue(`${ed} [name=valor]`), await pg.inputValue(`${ed} [name=de]`), await pg.inputValue(`${ed} [name=ate]`)],
+    ['Férias', '2000', addMesStr(m, 1), addMesStr(m, 2)]);
+  // Digita e cancela: a próxima edição não traz o que foi digitado.
+  await pg.fill(`${ed} [name=descricao]`, 'Digitado');
+  await pg.click(`${ed} button:has-text("Cancelar")`);
+  await pg.click(`button[onclick="editarPF('b')"]`);
+  assert.equal(await pg.inputValue(`${ed} [name=descricao]`), 'Bônus');
+  // "Até" antes de "de" é recusado.
+  await pg.fill(`${ed} [name=ate]`, addMesStr(m, 2));
+  await pg.click(`${ed} button:not([type=button])`);
+  assert.match(pg.alertas[pg.alertas.length - 1], /último mês não pode ser anterior/);
+  await pg.fill(`${ed} [name=ate]`, addMesStr(m, 5));
+  await pg.click(`${ed} button:not([type=button])`);
+  assert.equal(await avaliar(pg, `S.planoFerias.find(x => x.id === 'b').ate`), addMesStr(m, 5));
+  await pg.click(`button[onclick="excluir('planoFerias','a')"]`);
+  assert.deepEqual(await avaliar(pg, `S.planoFerias.map(x => x.id)`), ['b']);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Férias: no celular, os valores e os botões cabem na tela, e o total do mês vem primeiro', async () => {
+  const cel = await abrirApp({ largura: 390, altura: 844 });
+  const m = await avaliar(cel, `mkOf(hoje())`);
+  await definirDados(cel, { ...dadosFerias(m), planoFerias: [{ id: 'a', descricao: 'Férias + 1/3', valor: 4000, de: addMesStr(m, 1), ate: addMesStr(m, 2) }] });
+  await cel.evaluate(() => ir('ferias'));
+  const sobra = await cel.$eval('.pf-valores', s => s.scrollWidth - s.clientWidth);
+  assert.ok(sobra <= 0, `lista de valores ${sobra}px mais larga que a tela`);
+  assert.deepEqual(await cel.$$eval('.pf-bloco .scroll:not(.pf-valores) thead th', t => t.slice(0, 2).map(x => x.textContent)), ['Mês', 'Gastos']);
+  await cel.fechar();
+});
+
+/* ---------- saúde: resultado do plano de férias ---------- */
+test('Saúde: falta no plano de férias vira alerta e limita a nota; sobra não muda nada', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  // Receita 5.000 e fixo 1.000: sem o plano, nota alta. Com saldo inicial alto, sem déficit.
+  const base = { config: { cartoes: ['Nubank'], primeiroMes: m, saldoConta: 50000 }, orcamento: { Lazer: 100 },
+    recorrentes: [{ id: 's', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 5000, inicio: '2020-01-01', fim: '' },
+      { id: 'f', descricao: 'Aluguel', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 1000, inicio: '2020-01-01', fim: '' }] };
+  await definirDados(pg, base);
+  const limpa = await avaliar(pg, `scoreSaude()`);
+  assert.deepEqual(limpa.alertas, []);
+  assert.ok(limpa.score > 39);
+  // Gastos de +1: 1.000 + 100 = 1.100. Com 300 informados, faltam 800, dentro dos 3 primeiros meses: máximo 25.
+  await definirDados(pg, { ...base, planoFerias: [{ id: 'a', descricao: 'Férias', valor: 300, de: addMesStr(m, 1), ate: addMesStr(m, 1) }] });
+  let s = await avaliar(pg, `scoreSaude()`);
+  assert.equal(s.score, 25);
+  assert.ok(s.alertas.some(t => /Plano de férias: faltam R\$\s*800,00/.test(t)), s.alertas.join(' | '));
+  // Falta mais adiante, depois dos 3 meses: máximo 39.
+  await definirDados(pg, { ...base, planoFerias: [{ id: 'a', descricao: 'Férias', valor: 300, de: addMesStr(m, 6), ate: addMesStr(m, 6) }] });
+  assert.equal((await avaliar(pg, `scoreSaude()`)).score, 39);
+  // Falta além dos 12 meses não entra.
+  await definirDados(pg, { ...base, planoFerias: [{ id: 'a', descricao: 'Férias', valor: 300, de: addMesStr(m, 20), ate: addMesStr(m, 20) }] });
+  assert.equal((await avaliar(pg, `scoreSaude()`)).score, limpa.score);
+  // Sobra não dá bônus nem alerta.
+  await definirDados(pg, { ...base, planoFerias: [{ id: 'a', descricao: 'Férias', valor: 9000, de: addMesStr(m, 1), ate: addMesStr(m, 1) }] });
+  s = await avaliar(pg, `scoreSaude()`);
+  assert.deepEqual([s.score, s.alertas], [limpa.score, []]);
+});
+
+/* ---------- check list lançando na Conta ---------- */
+test('Check list: lança o pagamento na Conta só quando pedido, acompanha o valor e permite desfazer', async () => {
+  const m = await abrirCheck();
+  await pg.evaluate(() => { S.config.saldoConta = 1000; commit(); });
+  const saldo = () => avaliar(pg, `saldoContaEm(hoje())`);
+  const inicial = await saldo(); // 1.000 − 30 do Pix, se a data já passou
+  const i = await pagar('Fatura Nubank', 442);
+  assert.equal(await saldo(), inicial, 'marcar como pago não mexe na Conta');
+  await pg.click(`#clTabela tr:has(#clValor${i}) button:has-text("Lançar saída na Conta")`);
+  assert.equal(await saldo(), inicial - 442);
+  assert.match(await linhaCheck(i), /Saída lançada na Conta/);
+  assert.deepEqual(await avaliar(pg, `S.movConta.map(x => [x.tipo, x.valor, x.data === hoje()])`), [['Saída', 442, true]]);
+  assert.match(await avaliar(pg, `S.movConta[0].descricao`), /^Pagamento: Fatura Nubank/);
+  // Alterar o valor pago altera a saída; não aparece botão para lançar de novo.
+  await pagar('Fatura Nubank', 450);
+  assert.equal(await saldo(), inicial - 450);
+  assert.equal(await pg.$(`#clTabela tr:has(#clValor${i}) button:has-text("Lançar saída na Conta")`), null);
+  // Desfazer tira da Conta e mantém o item pago.
+  await pg.click(`#clTabela tr:has(#clValor${i}) button:has-text("Desfazer")`);
+  assert.equal(await saldo(), inicial);
+  assert.equal(await avaliar(pg, `resumoChecklist('${m}').comValor`), 1);
+  // Desmarcar o pago também remove a saída.
+  await pg.click(`#clTabela tr:has(#clValor${i}) button:has-text("Lançar saída na Conta")`);
+  await pg.uncheck(`#clPago${i}`);
+  assert.equal(await saldo(), inicial);
+  assert.deepEqual(await avaliar(pg, `S.movConta`), []);
+  // Se a saída foi excluída na aba Conta, o botão volta.
+  await pagar('Fatura Nubank', 442);
+  await pg.click(`#clTabela tr:has(#clValor${i}) button:has-text("Lançar saída na Conta")`);
+  await pg.evaluate(() => { S.movConta = []; commit(); });
+  assert.ok(await pg.$(`#clTabela tr:has(#clValor${i}) button:has-text("Lançar saída na Conta")`));
+  assert.deepEqual(pg.erros, []);
+});
+
+/* ---------- mês sem receita ---------- */
+test('Mês sem receita: avisa no Resumo e no Mês atual, e a receita eventual vira recorrente', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, { config: { cartoes: ['Nubank'], primeiroMes: m, mesRef: m },
+    recorrentes: [{ id: 'f', descricao: 'Aluguel', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 1000, inicio: '2020-01-01', fim: '' }],
+    eventuais: [{ id: 'v', mes: addMesStr(m, -1), descricao: 'Salário', tipo: 'Receita', valor: 2561.07 }, { id: 'd', mes: m, descricao: 'Unimed', tipo: 'Despesa', valor: 100 }] });
+  await pg.evaluate(() => mesVer(mkOf(hoje())));
+  await ir('resumo');
+  assert.match(await pg.innerText('.sem-receita'), /Nenhuma receita prevista/);
+  assert.match(await pg.innerText('.sem-receita'), /Repetir todo mês/);
+  await ir('mesatual');
+  assert.ok(await pg.$('.sem-receita'));
+  await ir('eventuais');
+  // Despesa não tem o botão.
+  assert.equal(await pg.$(`button[onclick="eventualRepetir('d')"]`), null);
+  await pg.click(`button[onclick="eventualRepetir('v')"]`);
+  assert.match(pg.alertas[pg.alertas.length - 1], /Transformar "Salário" em receita recorrente/);
+  assert.deepEqual(await avaliar(pg, `[S.eventuais.map(e => e.id), S.recorrentes.filter(r => r.grupo === 'Receita').map(r => [r.descricao, r.valor, r.inicio, r.fim])]`),
+    [['d'], [['Salário', 2561.07, addMesStr(m, -1) + '-01', '']]]);
+  // Agora todos os meses têm a receita, e o aviso some.
+  assert.equal(await avaliar(pg, `mesBase('${addMesStr(m, 5)}').rf`), 2561.07);
+  await ir('resumo');
+  assert.equal(await pg.$('.sem-receita'), null);
+  assert.deepEqual(pg.erros, []);
+});
+
+/* ---------- calendário ---------- */
+test('Calendário: quando cada parcela termina, falta pagar e quanto libera por mês', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, { config: { cartoes: ['Nubank'], primeiroMes: m }, parcelados: [
+    // A: 100/mês, começou há 2 meses, 5x: está na 3/5, termina em +2; faltam 3 × 100.
+    { id: 'a', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'A', categoria: 'Outros', valorTotal: 500, parcelas: 5, inicio: addMesStr(m, -2) },
+    // B: 50/mês, começa em +1, 2x: termina em +2... C entra em +4.
+    { id: 'b', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'B', categoria: 'Outros', valorTotal: 100, parcelas: 2, inicio: addMesStr(m, 1) },
+    { id: 'c', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'C', categoria: 'Outros', valorTotal: 300, parcelas: 1, inicio: addMesStr(m, 4) },
+    // Já terminada: não aparece.
+    { id: 'd', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'Velha', categoria: 'Outros', valorTotal: 10, parcelas: 1, inicio: addMesStr(m, -3) }] });
+  await pg.evaluate(() => ir('calendario'));
+  const ab = await avaliar(pg, `parcelasEmAberto('${m}').map(p => [p.descricao, p.atual, p.total, p.fim, p.restantes, p.faltaPagar])`);
+  assert.deepEqual(ab, [
+    ['A', 3, 5, addMesStr(m, 2), 3, 300], ['B', null, 2, addMesStr(m, 2), 2, 100], ['C', null, 1, addMesStr(m, 4), 1, 300]]);
+  // Mês a mês: 100, 150, 150, 0, 300, 0 ...
+  const lib = await avaliar(pg, `liberacaoParcelas('${m}', 6).map(x => [x.total, x.libera, x.entra, x.terminaram])`);
+  assert.deepEqual(lib, [[100, 0, 0, []], [150, 0, 50, []], [150, 0, 0, []], [0, 150, 0, ['A', 'B']], [300, 0, 300, []], [0, 300, 0, ['C']]]);
+  const txt = await pg.innerText('#calResumo');
+  assert.match(txt, /Parcelas neste mês\s*R\$\s*100,00/i);
+  assert.match(txt, /Falta pagar em parcelas\s*R\$\s*700,00/i);
+  assert.match(txt, /Próxima folga\s*R\$\s*150,00/i);
+  assert.doesNotMatch(await pg.innerText('#calCompras'), /Velha/);
+  assert.match(await pg.innerText('#calCompras'), /3\/5/);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Vencimentos: a fatura de um mês vence no seguinte, com aviso 3 dias antes, salvo se paga', async () => {
+  await definirDados(pg, { config: { cartoes: ['Nubank', 'Itaú'], primeiroMes: '2026-11' }, parcelados: [
+    { id: 'a', dataCompra: '2026-10-01', cartao: 'Nubank', descricao: 'A', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-10' }] });
+  await pg.evaluate(() => ir('config'));
+  const f = 'form[onsubmit="salvarVenc(event)"]';
+  await pg.selectOption(`${f} [name=cartao]`, 'Nubank');
+  await pg.fill(`${f} [name=dia]`, '10');
+  await pg.click(`${f} button`);
+  assert.deepEqual(await avaliar(pg, `S.config.vencimentos`), { Nubank: 10 });
+  assert.match(await pg.innerText('#listaVenc'), /Nubank: dia 10/);
+  // Em 5/11: a fatura de out vence em 10/11. Depois de 10/11: a de nov vence em 10/12.
+  assert.deepEqual(await avaliar(pg, `vencimentos('2026-11-05').map(v => [v.cartao, v.data, v.mesFatura, v.valor, v.faltam])`), [['Nubank', '2026-11-10', '2026-10', 100, 5]]);
+  assert.deepEqual(await avaliar(pg, `vencimentos('2026-11-10').map(v => [v.data, v.faltam])`), [['2026-11-10', 0]]);
+  assert.deepEqual(await avaliar(pg, `vencimentos('2026-11-11').map(v => [v.data, v.mesFatura])`), [['2026-12-10', '2026-11']]);
+  // Dia 31 em fevereiro cai no último dia do mês.
+  assert.equal(await avaliar(pg, `dataVenc('2027-02', 31)`), '2027-02-28');
+  // Aviso só a partir de 3 dias antes.
+  assert.equal(await avaliar(pg, `avisoVencimento('2026-11-06')`), '');
+  assert.match(await avaliar(pg, `avisoVencimento('2026-11-07')`), /Fatura Nubank vence em 3 dias: R\$\s*100,00/);
+  assert.match(await avaliar(pg, `avisoVencimento('2026-11-09')`), /vence amanhã/);
+  assert.match(await avaliar(pg, `avisoVencimento('2026-11-10')`), /vence hoje/);
+  // Paga no check list: sem aviso.
+  await pg.evaluate(() => { S.checklist = { '2026-10': { itens: { 'fat:Nubank': { pago: true, valor: 100 } } } }; });
+  assert.equal(await avaliar(pg, `avisoVencimento('2026-11-09')`), '');
+  // Renomear o cartão leva o vencimento junto; excluir o vencimento funciona.
+  await pg.evaluate(() => { S.parcelados = []; commit(); });
+  const fr = 'form[onsubmit="renomearLista(event,\'cartoes\')"]';
+  await pg.selectOption(`${fr} [name=antigo]`, 'Nubank');
+  await pg.fill(`${fr} [name=novo]`, 'Roxinho');
+  await pg.click(`${fr} button`);
+  assert.deepEqual(await avaliar(pg, `S.config.vencimentos`), { Roxinho: 10 });
+  await pg.click('#listaVenc button');
+  assert.deepEqual(await avaliar(pg, `S.config.vencimentos`), {});
+  assert.deepEqual(pg.erros, []);
 });
 
 /* ---------- Projeção: período e gráfico ---------- */
