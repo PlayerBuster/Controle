@@ -152,6 +152,7 @@ function blank() {
     estornos: [],
     creditos: [],
     movConta: [],
+    checklist: {},
     eventuais: [],
     lancamentos: [],
     ferias: {},
@@ -1036,13 +1037,12 @@ V.projecao = () => {
 
 // Faixa para escolher o mês visto: setas, seletor de mês e atalho para voltar ao mês atual.
 // fnPasso recebe +1 ou −1; fnIr recebe 'aaaa-mm'.
-function faixaMes(id, m, fnPasso, fnIr) {
-  const atual = mkOf(hoje());
+function faixaMes(id, m, fnPasso, fnIr, volta = { alvo: mkOf(hoje()), texto: 'Ir para o mês atual' }) {
   return `<div class="mes-fatura" id="${id}">
       <button type="button" onclick="${fnPasso}(-1)" aria-label="Mês anterior">‹</button>
       <div style="text-align:center"><div class="rel">Você está vendo</div>
         <input type="month" aria-label="Escolher o mês" value="${m}" onchange="if(this.value)${fnIr}(this.value)">
-        <span class="rel">${mesRelativo(m)}</span>${m !== atual ? `<button type="button" class="voltar" onclick="${fnIr}('${atual}')">Ir para o mês atual</button>` : ''}</div>
+        <span class="rel">${mesRelativo(m)}</span>${m !== volta.alvo ? `<button type="button" class="voltar" onclick="${fnIr}('${volta.alvo}')">${volta.texto}</button>` : ''}</div>
       <button type="button" onclick="${fnPasso}(1)" aria-label="Próximo mês">›</button>
     </div>`;
 }
@@ -1095,6 +1095,7 @@ V.mesatual = () => {
         : card('Mês', mNome(m), `${mesRelativo(m)} · ${diasMes} dias`)}
       ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
       ${card('Despesas previstas', brl(b.I), despesasTxt(b), 'neg')}
+      ${cardDiferenca(b)}
       ${card('Gasto lançado no mês', brl(exec), `No cartão (a pagar) ${brl(exec - aVistaMes(m))} · à vista ${brl(aVistaMes(m))} · ${Math.round(exec / Math.max(b.I, 1) * 100)}% das despesas previstas`)}
       ${card('Saldo em conta hoje', brl(saldoContaEm(hoje())), `Pago no Débito, Pix e Dinheiro no mês: ${brl(pagoMes(m))} · veja a aba Conta`, saldoContaEm(hoje()) < 0 ? 'neg' : 'pos')}
     </section>
@@ -1108,7 +1109,12 @@ V.mesatual = () => {
     </table></div></section>`;
 };
 
-const despesasTxt = b => `Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · à vista ${brl(b.av)} · eventuais ${brl(b.ed)} · orçamento restante ${brl(b.ov)}`;
+// Receitas previstas menos despesas previstas do mês.
+const cardDiferenca = b => {
+  const d = Math.round((b.rt - b.I) * 100) / 100;
+  return card('Receita − despesa', brl(d), d < 0 ? 'Faltam: as despesas passam das receitas' : d > 0 ? 'Sobra: as receitas cobrem as despesas' : 'Receitas e despesas empatadas', d < 0 ? 'neg' : 'pos');
+};
+const despesasTxt = b =>`Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · à vista ${brl(b.av)} · eventuais ${brl(b.ed)} · orçamento restante ${brl(b.ov)}`;
 
 V.resumo = () => {
   const m = S.config.mesRef;
@@ -1126,6 +1132,7 @@ V.resumo = () => {
       ${card('Mês de referência', mNome(m), 'Altere na faixa acima')}
       ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
       ${card('Despesas previstas', brl(b.I), despesasTxt(b), 'neg')}
+      ${cardDiferenca(b)}
       ${card('Gasto lançado no mês', brl(exec), `No cartão (a pagar) ${brl(exec - aVistaMes(m))} · à vista ${brl(aVistaMes(m))}`)}
       ${card('Saldo projetado em 12 meses', brl(proj[11].acum), `Saldo em conta hoje: ${brl(saldoContaEm(hoje()))}`, proj[11].acum < 0 ? 'neg' : 'pos')}
       ${card('Saldo projetado em 36 meses', brl(proj[35].acum), `Saldo acumulado ao fim do período`, proj[35].acum < 0 ? 'neg' : 'pos')}
@@ -1873,6 +1880,178 @@ function blocoCenarios() {
     </section>`;
 }
 
+/* ---------- check list do mês ----------
+   Feito no dia 5 do mês seguinte: o de outubro, em 5 de novembro. Lista o que precisa ser pago no mês
+   (faturas pelo valor global, contas fixas, despesas eventuais, boletos e outros) e compara o valor pago
+   com o lançado. O previsto é sempre calculado na hora: ao corrigir um lançamento, a diferença some.
+   S.checklist[mês] = { itens: { chave: { pago, valor } }, fora: 'sim' | 'nao' }. */
+let clMesEsc = null; // mês escolhido; null = o mês anterior ao de hoje, que é o check list da vez
+const clMesPadrao = () => addM(mkOf(hoje()), -1);
+const clMesVisto = () => clMesEsc || clMesPadrao();
+const dataChecklist = m => addM(m, 1) + '-05';
+function clVer(m) { clMesEsc = m === clMesPadrao() ? null : m; render(); }
+function clPasso(n) { clVer(addM(clMesVisto(), n)); }
+
+function itensChecklist(m) {
+  const itens = [];
+  S.config.cartoes.forEach(c => {
+    const v = fatCartao(c, m);
+    if (v > 0.005) itens.push({ key: 'fat:' + c, grupo: 'Faturas (valor global)', nome: `Fatura ${c}`, previsto: v, tipo: 'fat', ref: c });
+  });
+  S.recorrentes.filter(r => r.grupo === 'Fixo' && ativo(r, m)).forEach(r =>
+    itens.push({ key: 'rec:' + r.id, grupo: 'Contas fixas', nome: r.descricao, previsto: r.valor, tipo: 'rec', ref: r.id }));
+  S.eventuais.filter(e => e.tipo === 'Despesa' && e.mes === m).forEach(e =>
+    itens.push({ key: 'ev:' + e.id, grupo: 'Despesas eventuais', nome: e.descricao, previsto: e.valor, tipo: 'ev', ref: e.id }));
+  S.lancamentos.filter(l => aVista(l) && !FORMAS_CONTA.includes(l.forma) && mkOf(l.data) === m).forEach(l =>
+    itens.push({ key: 'lanc:' + l.id, grupo: 'Boletos e outros', nome: l.descricao, previsto: l.valor, tipo: 'lanc', ref: l.id }));
+  return itens;
+}
+const clDoMes = m => (S.checklist && S.checklist[m]) || { itens: {} };
+const clDif = (it, e) => (e.pago && e.valor != null ? Math.round((e.valor - it.previsto) * 100) / 100 : null);
+function resumoChecklist(m) {
+  const c = clDoMes(m), itens = itensChecklist(m);
+  const ent = it => (c.itens || {})[it.key] || {};
+  const pagos = itens.filter(it => ent(it).pago);
+  const comValor = pagos.filter(it => ent(it).valor != null);
+  const difs = comValor.filter(it => Math.abs(clDif(it, ent(it))) >= 0.005);
+  const total = itens.reduce((a, it) => a + it.previsto, 0);
+  const pagoTot = comValor.reduce((a, it) => a + ent(it).valor, 0);
+  const previstoPagos = comValor.reduce((a, it) => a + it.previsto, 0);
+  const respondeu = !!c.fora;
+  return { itens, total, pagoTot, difTot: pagoTot - previstoPagos, pagos: pagos.length, comValor: comValor.length, difs: difs.length, respondeu,
+    concluido: comValor.length === itens.length && respondeu };
+}
+// Aviso geral: a partir do dia 5, o check list do mês anterior ainda não concluído.
+function avisoChecklist(dia = hoje()) {
+  if (Number(dia.slice(8, 10)) < 5) return '';
+  const m = addM(mkOf(dia), -1), r = resumoChecklist(m);
+  if (!r.itens.length || r.concluido) return '';
+  return `<div class="aviso" id="avisoChecklist"><span>Check list de ${mNome(m)} pendente: ${r.comValor} de ${r.itens.length} itens conferidos${r.respondeu ? '' : ', falta dizer se ficou algum gasto de fora'}.</span>
+    <button class="small" onclick="clMesEsc=null;ir('checklist')">Abrir check list</button></div>`;
+}
+
+let clLinhas = []; // itens da tela, usados pelos botões (evita colocar nomes dentro do HTML dos botões)
+function clEntrada(key, criar) {
+  const m = clMesVisto();
+  if (!S.checklist) S.checklist = {};
+  if (criar && !S.checklist[m]) S.checklist[m] = { itens: {} };
+  const c = S.checklist[m];
+  if (!c) return {};
+  if (!c.itens) c.itens = {};
+  if (criar && !c.itens[key]) c.itens[key] = {};
+  return c.itens[key] || {};
+}
+function clMarcar(i, marcado) {
+  const it = clLinhas[i];
+  if (!it) return;
+  if (marcado) clEntrada(it.key, true).pago = true;
+  else if (S.checklist && S.checklist[clMesVisto()]) delete S.checklist[clMesVisto()].itens[it.key];
+  commit();
+}
+function clValor(i, valor) {
+  const it = clLinhas[i], v = parseFloat(valor);
+  if (!it) return;
+  const e = clEntrada(it.key, true);
+  if (v >= 0) { e.pago = true; e.valor = v; } else delete e.valor;
+  commit();
+}
+// "Corrigir" leva ao lançamento: o valor previsto é recalculado e a diferença some.
+function clCorrigir(i) {
+  const it = clLinhas[i];
+  if (!it) return;
+  if (it.tipo === 'fat') { faturaMes = clMesVisto(); fatModo = 'individual'; ir('faturas'); }
+  if (it.tipo === 'rec') { ir('recorrentes'); editarRec(it.ref); }
+  if (it.tipo === 'ev') { ir('eventuais'); editarEv(it.ref); }
+  if (it.tipo === 'lanc') { ir('lancamentos'); editarLanc('lanc', it.ref); }
+}
+function clFora(resposta) {
+  const m = clMesVisto();
+  if (!S.checklist) S.checklist = {};
+  if (!S.checklist[m]) S.checklist[m] = { itens: {} };
+  S.checklist[m].fora = resposta;
+  commit();
+}
+function addFora(e) {
+  e.preventDefault();
+  const f = e.target.elements, m = clMesVisto();
+  const valor = parseFloat(f.valor.value), descricao = f.descricao.value.trim();
+  if (!descricao) return alert('Informe a descrição.');
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  if (mkOf(f.data.value) !== m) return alert(`A data precisa ser em ${mNome(m)}, o mês deste check list.`);
+  const cartao = f.forma.value === 'Cartão';
+  if (cartao && !f.cartao.value) return alert('Escolha o cartão.');
+  S.lancamentos.push({ id: uid(), data: f.data.value, descricao, categoria: f.categoria.value, forma: f.forma.value,
+    cartao: cartao ? f.cartao.value : '', valor, cl: m, ...(cartao && f.fatura.value === 'prox' ? { prox: true } : {}) });
+  commit();
+}
+
+V.checklist = () => {
+  const m = clMesVisto(), r = resumoChecklist(m), c = clDoMes(m);
+  clLinhas = r.itens;
+  const ent = it => (c.itens || {})[it.key] || {};
+  const situacao = it => {
+    const e = ent(it), d = clDif(it, e);
+    if (!e.pago) return '<span class="muted">⏳ Não pago</span>';
+    if (d === null) return '<span>⚠️ Informe o valor pago</span>';
+    if (Math.abs(d) < 0.005) return '<span class="pos">✓ Confere</span>';
+    return `<span class="neg">⚠️ Pagou ${brl(Math.abs(d))} a ${d > 0 ? 'mais' : 'menos'} que o lançado</span>`;
+  };
+  const grupos = [...new Set(r.itens.map(it => it.grupo))];
+  // A situação fica sob o nome do item, para continuar visível no celular, sem rolar a tabela.
+  const corpo = grupos.map(g => `<tr><th colspan="4" style="padding-top:14px">${g}</th></tr>` + r.itens.map((it, i) => {
+    if (it.grupo !== g) return '';
+    const e = ent(it), d = clDif(it, e), temDif = d !== null && Math.abs(d) >= 0.005;
+    return `<tr class="cl-item">
+      <td>${esc(it.nome)}<div style="font-size:13px;margin-top:2px">${situacao(it)}</div>
+        ${temDif ? `<button class="small" style="margin-top:4px;white-space:normal" onclick="clCorrigir(${i})">Corrigir lançamento</button>` : ''}</td>
+      <td class="num">${brl(it.previsto)}</td>
+      <td style="text-align:center"><input type="checkbox" id="clPago${i}" aria-label="Pago: ${esc(it.nome)}" ${e.pago ? 'checked' : ''} onchange="clMarcar(${i}, this.checked)"></td>
+      <td><input type="number" id="clValor${i}" step="0.01" min="0" style="width:82px;padding:8px 6px;text-align:right" aria-label="Valor pago: ${esc(it.nome)}" value="${e.valor != null ? e.valor : ''}" onchange="clValor(${i}, this.value)"></td>
+    </tr>`;
+  }).join('')).join('') || `<tr><td colspan="4" class="muted">Nada a pagar lançado em ${mNome(m)}.</td></tr>`;
+  const dia = dataChecklist(m), atrasado = hoje() > dia;
+  const situacaoGeral = r.concluido
+    ? (r.difs ? `Concluído, com ${r.difs} diferença(s)` : 'Concluído, tudo confere')
+    : (atrasado ? `Pendente desde ${fmtData(dia)}` : hoje() === dia ? 'Fazer hoje' : `Fazer em ${fmtData(dia)}`);
+  const adicionados = S.lancamentos.filter(l => l.cl === m);
+  const padraoData = m === mkOf(hoje()) ? hoje() : m + '-01';
+  return `
+    ${faixaMes('clMes', m, 'clPasso', 'clVer', { alvo: clMesPadrao(), texto: 'Ir para o check list da vez' })}
+    <section class="grid" id="clResumo">
+      ${card(`Check list de ${mNome(m)}`, situacaoGeral, `${r.comValor} de ${r.itens.length} itens conferidos`, r.concluido ? (r.difs ? 'neg' : 'pos') : atrasado ? 'neg' : '')}
+      ${card('Total a pagar', brl(r.total), 'O que está lançado para o mês')}
+      ${card('Total pago', brl(r.pagoTot), 'O que você informou')}
+      ${card('Diferença', brl(r.difTot), 'Pago − lançado, só nos itens pagos', Math.abs(r.difTot) >= 0.005 ? 'neg' : 'pos')}
+    </section>
+    <section class="card"><h2>O que precisa ser pago em ${mNome(m)}</h2>
+      <div class="scroll"><table id="clTabela">
+        <thead><tr><th>Item e situação</th><th class="num">Lançado</th><th>Pago</th><th>Valor pago</th></tr></thead>
+        <tbody>${corpo}</tbody>
+      </table></div>
+      <p class="muted" style="margin-top:10px">Marque o que foi pago e digite o valor que saiu de verdade, olhando o banco. Se não bater, corrija o lançamento: a diferença some sozinha. Gastos em Débito, Pix e Dinheiro não aparecem aqui, porque já saíram da conta. Conferir aqui não altera a aba Conta.</p>
+    </section>
+    <section class="card" id="clFora"><h2>Ficou algum gasto de ${mNome(m)} de fora?</h2>
+      <div class="row">
+        <button class="tab ${c.fora === 'sim' ? 'on' : ''}" onclick="clFora('sim')">Sim, quero adicionar</button>
+        <button class="tab ${c.fora === 'nao' ? 'on' : ''}" onclick="clFora('nao')">Não, está tudo lançado</button>
+      </div>
+      ${c.fora === 'sim' ? `<form class="fields" style="margin-top:12px" onsubmit="addFora(event)">
+        <label>Data<input type="date" name="data" value="${padraoData}" required></label>
+        <label>Descrição<input type="text" name="descricao" required></label>
+        <label>Categoria<select name="categoria">${opts(S.config.categorias)}</select></label>
+        <label>Forma<select name="forma">${opts(FORMAS)}</select></label>
+        <label>Cartão (se Cartão)<select name="cartao"><option value=""></option>${opts(S.config.cartoes)}</select></label>
+        <label>Fatura (se Cartão)<select name="fatura">${optsFatura(false)}</select></label>
+        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
+        <button>Adicionar gasto</button>
+      </form>
+      <p class="muted" style="margin-top:10px">O gasto entra em Lançamentos como qualquer outro. No cartão, ele soma na fatura e o valor lançado acima é atualizado.</p>
+      ${adicionados.length ? `<div class="scroll" style="margin-top:10px"><table id="clAdicionados"><thead><tr><th>Adicionados neste check list</th><th>Forma</th><th class="num">Valor</th></tr></thead><tbody>
+        ${adicionados.map(l => `<tr><td>${fmtData(l.data)} · ${esc(l.descricao)}</td><td>${esc(l.forma)}${l.cartao ? ` · ${esc(l.cartao)}` : ''}</td><td class="num">${brl(l.valor)}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}` : ''}
+    </section>`;
+};
+
 let evEdit = null;
 function editarEv(id) {
   evEdit = id;
@@ -2026,10 +2205,10 @@ function avisoBackup() {
 
 function render() {
   const navX = $('abas').scrollLeft;
-  $('aviso').innerHTML = avisoBackup();
+  $('aviso').innerHTML = avisoBackup() + avisoChecklist();
   $('abas').innerHTML = [
     ['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'],
-    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'],
+    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['checklist', 'Check list'],
     ['eventuais', 'Eventuais'], ['patrimonio', 'Patrimônio'], ['config', 'Configurações']
   ].map(([k, t]) => `<button class="tab ${k === aba ? 'on' : ''}" onclick="ir('${k}')">${t}</button>`).join('');
   // Preserva as posições de rolagem (tabelas largas e barra de abas) entre redesenhos.
@@ -2087,15 +2266,15 @@ document.addEventListener('focusin', e => {
   const el = e.target;
   if (!el.matches || !el.matches('#conteudo input[type=number]')) return;
   const lb = el.closest('label');
-  calcAlvo = { form: el.form ? el.form.getAttribute('onsubmit') : '', name: el.name,
-    rotulo: lb ? lb.firstChild.textContent.trim() : el.name };
+  calcAlvo = { id: el.id, form: el.form ? el.form.getAttribute('onsubmit') : '', name: el.name,
+    rotulo: lb ? lb.firstChild.textContent.trim() : (el.getAttribute('aria-label') || el.name) };
   if (!$('calc').hidden) calcDesenhar();
 });
 const visivelEl = el => !!el && el.offsetParent !== null;
 // Campo que vai receber o resultado: o último tocado (se ainda estiver na tela) ou o primeiro campo de valor da aba.
 function calcCampo() {
   if (calcAlvo) {
-    const el = document.querySelector(`#conteudo form[onsubmit="${calcAlvo.form}"] [name="${calcAlvo.name}"]`);
+    const el = calcAlvo.form ? document.querySelector(`#conteudo form[onsubmit="${calcAlvo.form}"] [name="${calcAlvo.name}"]`) : $(calcAlvo.id);
     if (visivelEl(el)) return { el, rotulo: calcAlvo.rotulo };
   }
   const el = [...document.querySelectorAll('#conteudo input[type=number]')]
@@ -2308,8 +2487,13 @@ function renomearLista(e, lista) {
   const troca = arr => (arr || []).forEach(x => { if (x[campo] === antigo) x[campo] = novo; });
   S.config[lista] = S.config[lista].map(x => (x === antigo ? novo : x));
   troca(S.parcelados); troca(S.recorrentes); troca(S.lancamentos);
-  if (lista === 'cartoes') troca(S.creditos);
-  else {
+  if (lista === 'cartoes') {
+    troca(S.creditos);
+    // O check list guarda as faturas pelo nome do cartão.
+    Object.values(S.checklist || {}).forEach(c => {
+      if (c.itens && c.itens['fat:' + antigo]) { c.itens['fat:' + novo] = c.itens['fat:' + antigo]; delete c.itens['fat:' + antigo]; }
+    });
+  } else {
     // Orçamentos são guardados por nome da categoria.
     const renomeiaChave = o => { if (o && Object.prototype.hasOwnProperty.call(o, antigo)) { o[novo] = o[antigo]; delete o[antigo]; } };
     renomeiaChave(S.orcamento);
@@ -2575,7 +2759,7 @@ function importarPlanilhaLegada(todas) {
           cartoes: cartoes.length ? cartoes : S.config.cartoes,
           categorias: categorias.length ? categorias : S.config.categorias
         },
-        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], eventuais, lancamentos, ferias
+        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, eventuais, lancamentos, ferias
       };
       commit();
       alert(`Planilha importada: ${recorrentes.length} recorrentes, ${parcelados.length} parcelamento(s), ${eventuais.length} evento(s) e ${lancamentos.length} lançamento(s).`);
@@ -2885,6 +3069,19 @@ function montarPlanilha() {
   (S.movConta || []).forEach(x => ct.push([N(serialDate(x.data), FMT_DATA), x.descricao, x.tipo, N(x.valor, FMT_VALOR)]));
   abas.push({ nome: 'Conta', linhas: ct });
 
+  // Check list: o que foi conferido em cada mês. Os itens vão por nome, porque os ids mudam ao importar.
+  const clp = [['Mês do check list', 'Tipo', 'Item', 'Pago (1 = sim)', 'Valor pago']];
+  Object.entries(S.checklist || {}).forEach(([m, x]) => {
+    Object.entries(x.itens || {}).forEach(([k, e]) => {
+      const tipo = k.slice(0, k.indexOf(':')), ref = k.slice(k.indexOf(':') + 1);
+      const fonte = tipo === 'rec' ? S.recorrentes : tipo === 'ev' ? S.eventuais : tipo === 'lanc' ? S.lancamentos : null;
+      const nome = tipo === 'fat' ? ref : (fonte.find(i => i.id === ref) || {}).descricao;
+      if (nome) clp.push([N(serialMes(m), FMT_MES), tipo, nome, e.pago ? 1 : 0, e.valor != null ? N(e.valor, FMT_VALOR) : null]);
+    });
+    if (x.fora) clp.push([N(serialMes(m), FMT_MES), 'fora', x.fora, null, null]);
+  });
+  abas.push({ nome: 'Checklist', linhas: clp });
+
   // Orçamento por mês (valores editáveis)
   const om = [
     ['Orçamento mensal por categoria (edite os valores)'],
@@ -3070,6 +3267,19 @@ function interpretarNova(g) {
     };
   });
 
+  // Check list (aba opcional): religa cada item pelo nome, porque os ids são novos a cada importação.
+  const checklist = {};
+  (g.Checklist || []).slice(1).filter(r => r[0] && r[1] && r[2]).forEach(r => {
+    const m = mkOf(isoData(r[0])), tipo = String(r[1]), nome = String(r[2]);
+    const c = checklist[m] = checklist[m] || { itens: {} };
+    if (tipo === 'fora') { c.fora = nome; return; }
+    const achado = tipo === 'rec' ? recorrentes.find(x => x.descricao === nome)
+      : tipo === 'ev' ? eventuais.find(x => x.mes === m && x.descricao === nome)
+      : tipo === 'lanc' ? lancamentos.find(x => mkOf(x.data) === m && x.descricao === nome) : null;
+    const key = tipo === 'fat' ? 'fat:' + nome : achado ? `${tipo}:${achado.id}` : null;
+    if (key) c.itens[key] = { pago: Number(r[3]) === 1, ...(r[4] != null && r[4] !== '' ? { valor: Number(r[4]) } : {}) };
+  });
+
   const om = g.Orcamento_Meses;
   const header = om[2] || [];
   const colMeses = [];
@@ -3106,7 +3316,7 @@ function interpretarNova(g) {
       cartoes: cartoes.length ? cartoes : S.config.cartoes,
       categorias: categorias.length ? categorias : S.config.categorias
     },
-    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, eventuais, lancamentos, ferias, patrimonio
+    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, eventuais, lancamentos, ferias, patrimonio
   };
 }
 
