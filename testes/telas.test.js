@@ -368,7 +368,7 @@ test('Faturas: faixa mostra o mês escolhido e as setas trocam de mês', async (
   await ir('faturas');
   const atual = await avaliar(pg, `faturaMes`);
   const txt = await pg.innerText('#mesFatura');
-  assert.match(txt, new RegExp(await avaliar(pg, `mNome(faturaMes).replace('/', '\\\\/')`)));
+  assert.ok(txt.includes(await avaliar(pg, `mFatura(faturaMes)`)), txt);
   assert.match(txt, await avaliar(pg, `mIdx(faturaMes) === mIdx(mkOf(hoje()))`) ? /mês atual/ : /meses|próximo|passado/);
   await pg.click('#mesFatura button[aria-label="Próximo mês"]');
   assert.equal(await avaliar(pg, `faturaMes`), await avaliar(pg, `addM('${atual}', 1)`));
@@ -501,7 +501,56 @@ test('Simulador: parcela que cai num mês apertado reprova, mesmo com o 1º mês
   assert.notEqual(v1.nivel, 'nao', v1.motivos.join(' | '));
 });
 
-test('Simulador: pouco saldo nos próximos 12 meses dá "com cuidado"', async () => {
+// Mês atual com fatura de 2.500: −700 agora; depois sobra 1.800/mês. Acumulado: −700, 1.100, 2.900, 4.700...
+const mesVermelhoAgora = m => ({ parcelados: [
+  { id: 'p', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'TV', categoria: 'Outros', valorTotal: 2500, parcelas: 1, inicio: m }] });
+
+test('Simulador: vermelho no mês seguinte não trava a avaliação de compras no futuro', async () => {
+  const { m, dados } = await dadosSim(mesVermelhoAgora);
+  await definirDados(pg, dados);
+  // No próprio mês vermelho, continua reprovando.
+  assert.equal((await simular(m, 300, 1)).nivel, 'nao');
+  // No mês seguinte: acumulado 1.100 − 300 = 800, abaixo de um mês de despesas (925 = (900 × 12 + 300) ÷ 12): com cuidado.
+  const v1 = await simular(addMesStr(m, 1), 300, 1);
+  assert.equal(v1.nivel, 'cuidado', v1.motivos.join(' | '));
+  assert.ok(!v1.motivos.some(t => /negativo/.test(t)), v1.motivos.join(' | '));
+  assert.ok(v1.avisos.some(t => /Antes da compra/.test(t)), 'avisa do mês vermelho anterior');
+  // Seis meses depois: acumulado 10.100 − 300, sem aperto: possível, ainda com o aviso.
+  const v6 = await simular(addMesStr(m, 6), 300, 1);
+  assert.equal(v6.nivel, 'ok', v6.motivos.join(' | '));
+  assert.ok(v6.avisos.length === 1);
+});
+
+test('Simulador: compra grande no futuro que deixa o saldo negativo continua reprovada', async () => {
+  const { m, dados } = await dadosSim(mesVermelhoAgora);
+  await definirDados(pg, dados);
+  // Em 6 meses o acumulado é 10.100; 30.000 à vista deixa o mês e o acumulado negativos.
+  const v = await simular(addMesStr(m, 6), 30000, 1);
+  assert.equal(v.nivel, 'nao');
+  assert.ok(v.motivos.some(t => /vermelho|negativo/.test(t)), v.motivos.join(' | '));
+});
+
+test('Simulador: indica o primeiro mês em que a compra deixa de ser reprovada e mostra o futuro mês a mês', async () => {
+  const { m, dados } = await dadosSim(mesVermelhoAgora);
+  await definirDados(pg, dados);
+  // 1.500 à vista: no mês atual, vermelho. Mês +1: acumulado 1.100 − 1.500 < 0. Mês +2: 2.900 − 1.500 = 1.400 e sobra 300 no mês.
+  await pg.evaluate(mm => { Object.assign(simEntrada, { valor: 1500, parcelas: 1, mes: mm, categoria: 'Lazer' }); ir('simulador'); }, m);
+  assert.match(await pg.innerText('#simMelhorMes'), new RegExp(await avaliar(pg, `mNome(addM('${m}', 2)).replace('/', '\\\\/')`)));
+  // O mês escolhido no formulário vale: simular em outro mês muda a tabela, que começa nele e tem 12 linhas.
+  const alvo = addMesStr(m, 3);
+  await pg.selectOption('form[onsubmit="simRodar(event)"] [name=mes]', alvo);
+  await pg.click('form[onsubmit="simRodar(event)"] button');
+  assert.equal(await pg.inputValue('form[onsubmit="simRodar(event)"] [name=mes]'), alvo);
+  const linhas = await pg.$$eval('#simFuturo tbody tr', trs => trs.map(t => t.cells[0].innerText));
+  assert.equal(linhas.length, 12);
+  assert.match(linhas[0], /\(compra\)/);
+  assert.ok(linhas[0].startsWith(await avaliar(pg, `mNome('${alvo}')`)));
+  // Em +3 o acumulado é 4.700 − 1.500: a compra não é reprovada, então não há indicação de outro mês.
+  assert.equal(await pg.$('#simMelhorMes'), null);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Simulador: pouco saldo nos 12 meses a partir da compra dá "com cuidado"', async () => {
   // Sem saldo inicial, sobra 1.800/mês; uma compra de 1.700 no 1º mês deixa o pior saldo bem abaixo de um mês de despesas.
   const { m, dados } = await dadosSim(() => ({}));
   await definirDados(pg, dados);
@@ -583,6 +632,34 @@ test('Faturas: modo "Gastos individuais por banco" mostra os itens do mês escol
   await pg.click('button:has-text("Gastos individuais por banco")');
   const txt = await pg.innerText('#conteudo');
   assert.match(txt, /Jantar/);
-  assert.match(txt, /Total das faturas em dez\/2026: R\$\s*120,00/);
+  assert.match(txt, /Total das faturas em Dez\/2026 \(Jan\.\/2027\): R\$\s*120,00/);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Faturas: todos os meses da aba aparecem como "Out/2026 (Nov./2026)"', async () => {
+  assert.deepEqual(await avaliar(pg, `[mFatura('2026-10'), mFatura('2026-12'), mFatura('2027-05')]`),
+    ['Out/2026 (Nov./2026)', 'Dez/2026 (Jan./2027)', 'Mai/2027 (Jun./2027)']);
+  await definirDados(pg, { config: { cartoes: ['Nubank'], primeiroMes: '2026-11' }, lancamentos: [
+    { id: 'a', data: '2026-10-20', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 42 }] });
+  await ir('faturas');
+  await pg.selectOption('select[name=mes]', '2026-10');
+  await pg.click('button:has-text("Ver fatura")');
+  const rotulo = 'Out/2026 (Nov./2026)';
+  assert.ok((await pg.innerText('#mesFatura')).includes(rotulo));
+  const opcoes = await pg.$$eval('select[name=mes] option', os => os.map(o => o.textContent));
+  assert.equal(opcoes[0], rotulo);
+  assert.equal(opcoes[1], 'Nov/2026 (Dez./2026)');
+  // Títulos em maiúsculas por CSS: o texto de origem é o que importa.
+  await pg.click('button:has-text("Gasto total por cartão")');
+  const titulos = await pg.$$eval('#conteudo h2', hs => hs.map(h => h.textContent));
+  assert.ok(titulos.includes(`Cartões · ${rotulo}`), titulos.join(' | '));
+  await pg.click('button:has-text("Gastos individuais por banco")');
+  assert.ok((await pg.$$eval('#conteudo h2', hs => hs.map(h => h.textContent))).includes(`Nubank · ${rotulo}`));
+  // Tabela dos próximos 12 meses.
+  const doze = await pg.$$eval('#conteudo section:last-of-type tbody tr td:first-child', tds => tds.map(t => t.textContent));
+  assert.equal(doze[0], 'Nov/2026 (Dez./2026)');
+  assert.equal(doze[11], 'Out/2027 (Nov./2027)');
+  // Planilha exportada da aba.
+  assert.equal(await avaliar(pg, `abaFatura('2026-10').linhas[0][0].v`), `Fatura de ${rotulo}`);
   assert.deepEqual(pg.erros, []);
 });
