@@ -46,6 +46,8 @@ const DADOS = {
     { id: 'l6', data: '2026-12-10', descricao: 'Plano (Simulador)', categoria: 'Lazer', forma: 'Planejada', cartao: '', valor: 300 },
     { id: 'l7', data: '2026-11-25', descricao: 'Sapato', categoria: 'Vestuário', forma: 'Cartão', cartao: 'Itaú', valor: 250 },
     { id: 'l8', data: '2026-12-31', descricao: 'Ceia', categoria: 'Alimentação', forma: 'Cartão', cartao: 'Inter', valor: 1600, prox: true }],
+  checklist: { '2026-11': { fora: 'nao', itens: {
+    'fat:Nubank': { pago: true, valor: 300 }, 'rec:r2': { pago: true, valor: 2200 }, 'lanc:l1': { pago: true }, 'ev:v9': { pago: true, valor: 1 } } } },
   movConta: [
     { id: 'm1', data: '2026-11-05', descricao: 'Salário', tipo: 'Entrada', valor: 7000 },
     { id: 'm2', data: '2026-11-10', descricao: 'Pagamento fatura Nubank', tipo: 'Saída', valor: 276.75 }],
@@ -129,7 +131,13 @@ test('exportar e importar a planilha devolve os mesmos dados', async () => {
       cartoes: n.config.cartoes, primeiroMes: n.config.primeiroMes, saldo: n.config.saldoConta,
       recorrentes: n.recorrentes.map(sem), parcelados: n.parcelados.map(sem), eventuais: n.eventuais.map(sem),
       lancamentos: n.lancamentos.map(sem), estornos: n.estornos.map(e => [n.parcelados.find(p => p.id === e.parcelaId).descricao, e.tipo, e.mes, e.valor]),
-      ferias: n.ferias, orcDez: n.orcamentoMeses['2026-12'], creditos: n.creditos.map(sem), movConta: n.movConta.map(sem)
+      ferias: n.ferias, orcDez: n.orcamentoMeses['2026-12'], creditos: n.creditos.map(sem), movConta: n.movConta.map(sem),
+      // Check list com os ids novos da importação trocados pelos nomes, para comparar.
+      checklist: Object.fromEntries(Object.entries(n.checklist).map(([m, c]) => [m, { fora: c.fora, itens: Object.fromEntries(Object.entries(c.itens).map(([k, e]) => {
+        const id = k.slice(k.indexOf(':') + 1);
+        const nome = k.startsWith('rec:') ? n.recorrentes.find(x => x.id === id).descricao : k.startsWith('lanc:') ? n.lancamentos.find(x => x.id === id).descricao : id;
+        return [k.slice(0, k.indexOf(':') + 1) + nome, e];
+      })) }]))
     };
   }, g);
   const semId = ({ id, ...x }) => x;
@@ -147,6 +155,9 @@ test('exportar e importar a planilha devolve os mesmos dados', async () => {
   assert.equal(r.orcDez.Lazer, 800);
   assert.deepEqual(r.creditos, DADOS.creditos.map(semId));
   assert.deepEqual(r.movConta, DADOS.movConta.map(semId));
+  // O item 'ev:v9' aponta para um evento que não existe mais: fica de fora da planilha.
+  assert.deepEqual(r.checklist, { '2026-11': { fora: 'nao', itens: {
+    'fat:Nubank': { pago: true, valor: 300 }, 'rec:Aluguel': { pago: true, valor: 2200 }, 'lanc:Mercado': { pago: true } } } });
 });
 
 test('faturas da planilha exportada respeitam "Próxima fatura" e os ajustes manuais', async () => {

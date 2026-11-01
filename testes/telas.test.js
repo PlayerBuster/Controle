@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { abrirApp, fecharNavegador, definirDados, avaliar } = require('./lib');
 
 const ABAS = ['resumo', 'mesatual', 'projecao', 'simulador', 'orcamento', 'lancamentos', 'conta', 'recorrentes', 'parcelas',
-  'faturas', 'eventuais', 'patrimonio', 'config'];
+  'faturas', 'checklist', 'eventuais', 'patrimonio', 'config'];
 
 let pg;
 before(async () => { pg = await abrirApp(); });
@@ -675,6 +675,195 @@ test('Eventuais: editar traz os dados do item e troca o mês', async () => {
   // 300 de bônus + 2.500 que veio do mês anterior.
   assert.equal(await avaliar(pg, `mesBase('${m}').re`), 2800);
   assert.equal(await pg.$(ed), null);
+});
+
+test('Resumo e Mês atual: quadro "Receita − despesa" mostra a diferença do mês', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  // Receita eventual 3.461,07; fixo 209,51; despesa eventual 100; fatura 4.072,34; orçamento 38.
+  // Despesas: 209,51 + 100 + 4.072,34 + 38 = 4.419,85. Diferença: 3.461,07 − 4.419,85 = −958,78.
+  await definirDados(pg, { config: { cartoes: ['Nubank'], primeiroMes: m, mesRef: m },
+    recorrentes: [{ id: 'f', descricao: 'Internet', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 209.51, inicio: '2020-01-01', fim: '' }],
+    eventuais: [{ id: 'r', mes: m, descricao: 'Salário', tipo: 'Receita', valor: 3461.07 }, { id: 'd', mes: m, descricao: 'Unimed', tipo: 'Despesa', valor: 100 },
+      { id: 'pos', mes: addMesStr(m, 1), descricao: 'Bônus', tipo: 'Receita', valor: 5000 }],
+    parcelados: [{ id: 'p', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'TV', categoria: 'Outros', valorTotal: 4072.34, parcelas: 1, inicio: m }],
+    orcamento: { 'Alimentação': 38 } });
+  const quadro = () => pg.$$eval('#conteudo .card', cs => { const c = cs.find(x => x.querySelector('h2') && x.querySelector('h2').textContent === 'Receita − despesa');
+    return c ? [c.querySelector('.big').textContent.replace(/\s/g, ' '), c.querySelector('.big').className] : null; });
+  await pg.evaluate(() => mesVer(mkOf(hoje())));
+  await ir('mesatual');
+  assert.deepEqual(await quadro(), ['-R$ 958,78', 'big neg']);
+  await ir('resumo');
+  assert.deepEqual(await quadro(), ['-R$ 958,78', 'big neg']);
+  // Mês seguinte: 5.000 de receita − (209,51 + 38) = 4.752,49 de sobra.
+  await pg.click('#resumoMes button[aria-label="Próximo mês"]');
+  assert.deepEqual(await quadro(), ['R$ 4.752,49', 'big pos']);
+  assert.deepEqual(pg.erros, []);
+});
+
+/* ---------- check list ---------- */
+// Mês do check list da vez (o anterior ao de hoje): fatura Nubank 442 (parcela 400 + avulso 42), fatura Itaú 0 (fica de fora),
+// conta fixa 100, despesa eventual 50, boleto 80. O Pix de 30 já saiu da conta e não entra. Total a pagar: 672.
+const dadosCheck = m => ({ config: { cartoes: ['Nubank', 'Itaú'], primeiroMes: m },
+  recorrentes: [{ id: 'f', descricao: 'Internet', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 100, inicio: '2020-01-01', fim: '' },
+    { id: 's', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 3000, inicio: '2020-01-01', fim: '' }],
+  parcelados: [{ id: 'p', dataCompra: m + '-01', cartao: 'Nubank', descricao: 'TV', categoria: 'Outros', valorTotal: 400, parcelas: 1, inicio: m }],
+  eventuais: [{ id: 'v', mes: m, descricao: 'Unimed', tipo: 'Despesa', valor: 50 }, { id: 'r', mes: m, descricao: 'Bônus', tipo: 'Receita', valor: 900 }],
+  lancamentos: [
+    { id: 'a', data: m + '-10', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 42 },
+    { id: 'b', data: m + '-11', descricao: 'Luz', categoria: 'Moradia', forma: 'Boleto', cartao: '', valor: 80 },
+    { id: 'c', data: m + '-12', descricao: 'Feira', categoria: 'Alimentação', forma: 'Pix', cartao: '', valor: 30 }] });
+const abrirCheck = async () => {
+  const m = await avaliar(pg, `addM(mkOf(hoje()), -1)`);
+  await definirDados(pg, dadosCheck(m));
+  await pg.evaluate(() => { clMesEsc = null; ir('checklist'); });
+  return m;
+};
+const pagar = async (nome, valor) => {
+  const i = await pg.evaluate(n => clLinhas.findIndex(x => x.nome === n), nome);
+  assert.ok(i >= 0, `item ${nome}`);
+  await pg.fill(`#clValor${i}`, String(valor));
+  await pg.dispatchEvent(`#clValor${i}`, 'change');
+  return i;
+};
+const linhaCheck = (i) => pg.innerText(`#clTabela tr:has(#clValor${i})`);
+
+test('Check list: abre no mês anterior e lista o que precisa ser pago, com a fatura no valor global', async () => {
+  const m = await abrirCheck();
+  assert.equal(await pg.inputValue('#clMes input[type=month]'), m);
+  assert.deepEqual(await avaliar(pg, `clLinhas.map(x => [x.grupo, x.nome, x.previsto])`), [
+    ['Faturas (valor global)', 'Fatura Nubank', 442], ['Contas fixas', 'Internet', 100],
+    ['Despesas eventuais', 'Unimed', 50], ['Boletos e outros', 'Luz', 80]]);
+  assert.equal(await avaliar(pg, `resumoChecklist('${m}').total`), 672);
+  // O check list deste mês é feito no dia 5 do mês seguinte.
+  assert.equal(await avaliar(pg, `dataChecklist('2026-10')`), '2026-11-05');
+  assert.equal(await avaliar(pg, `dataChecklist('2026-12')`), '2027-01-05');
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Check list: informa se pagou e se o valor confere com o lançado', async () => {
+  const m = await abrirCheck();
+  assert.match(await pg.innerText('#clTabela'), /Não pago/);
+  // Pago igual ao lançado.
+  let i = await pagar('Internet', 100);
+  assert.match(await linhaCheck(i), /✓ Confere/);
+  // Pago a mais: 460 contra 442 lançados, mostra a diferença e oferece corrigir.
+  i = await pagar('Fatura Nubank', 460);
+  assert.match(await linhaCheck(i), /Pagou R\$\s*18,00 a mais que o lançado/);
+  assert.match(await linhaCheck(i), /Corrigir lançamento/);
+  // Pago a menos.
+  i = await pagar('Luz', 75);
+  assert.match(await linhaCheck(i), /Pagou R\$\s*5,00 a menos/);
+  // Marcar sem valor não conta como conferido nem finge que bate.
+  const u = await pg.evaluate(() => clLinhas.findIndex(x => x.nome === 'Unimed'));
+  await pg.check(`#clPago${u}`);
+  assert.match(await linhaCheck(u), /Informe o valor pago/);
+  const r = await avaliar(pg, `resumoChecklist('${m}')`);
+  assert.deepEqual([r.pagos, r.comValor, r.difs, r.pagoTot, Math.round(r.difTot * 100) / 100, r.concluido], [4, 3, 2, 635, 13, false]);
+  // Desmarcar apaga o que foi informado.
+  await pg.uncheck(`#clPago${u}`);
+  assert.match(await linhaCheck(u), /Não pago/);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Check list: corrigir o lançamento faz a diferença sumir', async () => {
+  const m = await abrirCheck();
+  const i = await pagar('Luz', 95);
+  assert.match(await linhaCheck(i), /a mais/);
+  await pg.click(`#clTabela tr:has(#clValor${i}) button`);
+  const ed = 'form[onsubmit="salvarLanc(event)"]';
+  assert.equal(await pg.inputValue(`${ed} [name=descricao]`), 'Luz');
+  await pg.fill(`${ed} [name=valor]`, '95');
+  await pg.click(`${ed} button:not([type=button])`);
+  await pg.evaluate(() => ir('checklist'));
+  assert.equal(await avaliar(pg, `clLinhas.find(x => x.nome === 'Luz').previsto`), 95);
+  assert.match(await linhaCheck(i), /✓ Confere/);
+  assert.equal(await avaliar(pg, `resumoChecklist('${m}').difs`), 0);
+  // Na fatura, "Corrigir" abre os itens da fatura daquele mês.
+  const f = await pagar('Fatura Nubank', 500);
+  await pg.click(`#clTabela tr:has(#clValor${f}) button`);
+  assert.deepEqual(await avaliar(pg, `[aba, faturaMes, fatModo]`), ['faturas', m, 'individual']);
+  await pg.evaluate(() => fatModoSet('total'));
+});
+
+test('Check list: pergunta se ficou gasto de fora, e o gasto adicionado entra na fatura', async () => {
+  const m = await abrirCheck();
+  assert.equal(await pg.$('form[onsubmit="addFora(event)"]'), null);
+  assert.match(await pg.innerText('#clFora'), /Ficou algum gasto/i);
+  await pg.click('#clFora button:has-text("Sim, quero adicionar")');
+  const f = 'form[onsubmit="addFora(event)"]';
+  await pg.fill(`${f} [name=data]`, m + '-20');
+  await pg.fill(`${f} [name=descricao]`, 'Farmácia');
+  await pg.selectOption(`${f} [name=forma]`, 'Cartão');
+  await pg.selectOption(`${f} [name=cartao]`, 'Nubank');
+  await pg.fill(`${f} [name=valor]`, '58');
+  await pg.click(`${f} button`);
+  // Fatura Nubank: 442 + 58 = 500; aparece na lista de adicionados.
+  assert.equal(await avaliar(pg, `clLinhas.find(x => x.nome === 'Fatura Nubank').previsto`), 500);
+  assert.match(await pg.innerText('#clAdicionados'), /Farmácia/);
+  assert.deepEqual(await avaliar(pg, `S.lancamentos.filter(l => l.descricao === 'Farmácia').map(l => [l.forma, l.cartao, l.valor])`), [['Cartão', 'Nubank', 58]]);
+  // Data fora do mês do check list é recusada.
+  await pg.fill(`${f} [name=data]`, addMesStr(m, 1) + '-02');
+  await pg.fill(`${f} [name=descricao]`, 'Outro mês');
+  await pg.fill(`${f} [name=valor]`, '1');
+  await pg.click(`${f} button`);
+  assert.match(pg.alertas[pg.alertas.length - 1], /A data precisa ser em/);
+  assert.equal(await avaliar(pg, `S.lancamentos.some(l => l.descricao === 'Outro mês')`), false);
+  await pg.fill(`${f} [name=descricao]`, '');
+  await pg.fill(`${f} [name=valor]`, '');
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Check list: conclui com tudo conferido e a resposta; avisa a partir do dia 5', async () => {
+  const m = await abrirCheck();
+  const dia4 = addMesStr(m, 1) + '-04', dia5 = addMesStr(m, 1) + '-05';
+  assert.equal(await avaliar(pg, `avisoChecklist('${dia4}')`), '');
+  assert.match(await avaliar(pg, `avisoChecklist('${dia5}')`), /Check list de .* pendente: 0 de 4 itens/);
+  for (const [n, v] of [['Fatura Nubank', 442], ['Internet', 100], ['Unimed', 50], ['Luz', 80]]) await pagar(n, v);
+  // Tudo pago, mas falta responder sobre gastos de fora.
+  assert.equal(await avaliar(pg, `resumoChecklist('${m}').concluido`), false);
+  assert.match(await avaliar(pg, `avisoChecklist('${dia5}')`), /falta dizer se ficou algum gasto de fora/);
+  await pg.click('#clFora button:has-text("Não, está tudo lançado")');
+  assert.equal(await avaliar(pg, `resumoChecklist('${m}').concluido`), true);
+  assert.equal(await avaliar(pg, `avisoChecklist('${dia5}')`), '');
+  assert.match(await pg.innerText('#clResumo'), /Concluído, tudo confere/);
+  // As setas abrem outro mês, que tem o próprio check list; há atalho para voltar.
+  await pg.click('#clMes button[aria-label="Mês anterior"]');
+  assert.equal(await avaliar(pg, `clMesVisto()`), addMesStr(m, -1));
+  await pg.click('#clMes .voltar');
+  assert.equal(await avaliar(pg, `clMesVisto()`), m);
+  // Renomear o cartão mantém a fatura conferida.
+  await pg.evaluate(() => ir('config'));
+  const fr = 'form[onsubmit="renomearLista(event,\'cartoes\')"]';
+  await pg.selectOption(`${fr} [name=antigo]`, 'Nubank');
+  await pg.fill(`${fr} [name=novo]`, 'Roxinho');
+  await pg.click(`${fr} button`);
+  assert.equal(await avaliar(pg, `resumoChecklist('${m}').concluido`), true);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Check list: no celular, situação e valor pago aparecem sem rolar a tabela', async () => {
+  const cel = await abrirApp({ largura: 390, altura: 844 });
+  const m = await avaliar(cel, `addM(mkOf(hoje()), -1)`);
+  await definirDados(cel, { ...dadosCheck(m), config: { cartoes: ['Mercado Pago'], primeiroMes: m },
+    parcelados: [{ id: 'p', dataCompra: m + '-01', cartao: 'Mercado Pago', descricao: 'TV', categoria: 'Outros', valorTotal: 1630.11, parcelas: 1, inicio: m }],
+    lancamentos: [], checklist: { [m]: { itens: { 'fat:Mercado Pago': { pago: true, valor: 1073.78 } } } } });
+  await cel.evaluate(() => ir('checklist'));
+  const sobra = await cel.$eval('#clTabela', t => t.parentElement.scrollWidth - t.parentElement.clientWidth);
+  assert.ok(sobra <= 0, `tabela ${sobra}px mais larga que a tela`);
+  assert.equal(await cel.isVisible('#clTabela button:has-text("Corrigir lançamento")'), true);
+  await cel.fechar();
+});
+
+test('Calculadora: envia o resultado para o valor pago do check list', async () => {
+  await abrirCheck();
+  const i = await pg.evaluate(() => clLinhas.findIndex(x => x.nome === 'Luz'));
+  await pg.focus(`#clValor${i}`);
+  await pg.click('#calcBtn');
+  await pg.fill('#calcVisor', '40*2');
+  await pg.dispatchEvent('#calcVisor', 'input');
+  assert.match(await pg.innerText('#calcUsar'), /Valor pago: Luz/);
+  await pg.click('#calcUsar');
+  assert.match(await linhaCheck(i), /✓ Confere/);
 });
 
 /* ---------- Projeção: período e gráfico ---------- */
