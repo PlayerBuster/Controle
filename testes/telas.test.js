@@ -606,6 +606,130 @@ test('Simulador: meta de compra usa o mês mais apertado, não a média', async 
   assert.equal(r.viavel, false);
 });
 
+/* ---------- ver um mês específico ---------- */
+const comEventuais = m => ({ config: { cartoes: ['Nubank'], primeiroMes: m, mesRef: m }, eventuais: [
+  { id: 'v1', mes: addMesStr(m, -1), descricao: 'Salário antigo', tipo: 'Receita', valor: 2500 },
+  { id: 'v2', mes: addMesStr(m, -1), descricao: 'Unimed', tipo: 'Despesa', valor: 100 },
+  { id: 'v3', mes: m, descricao: 'Bônus', tipo: 'Receita', valor: 300 }] });
+
+test('Mês atual: as setas e o seletor mostram outro mês, e dá para voltar', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, comEventuais(m));
+  await pg.evaluate(() => mesVer(mkOf(hoje())));
+  await ir('mesatual');
+  assert.match(await pg.innerText('#conteudo'), /Eventuais R\$\s*300,00/i);
+  assert.match(await pg.innerText('#conteudo'), /Dia do mês/i);
+  assert.equal(await pg.$('#mesVisto .voltar'), null);
+  await pg.click('#mesVisto button[aria-label="Mês anterior"]');
+  // No mês anterior: receita de 2.500 e despesa eventual de 100; o card do dia dá lugar ao nome do mês.
+  let txt = await pg.innerText('#conteudo');
+  assert.match(txt, /Receitas previstas\s*R\$\s*2\.500,00/i);
+  assert.match(txt, /eventuais R\$\s*100,00/i);
+  assert.doesNotMatch(txt, /Dia do mês/i);
+  assert.match(txt, /mês passado/);
+  assert.equal(await pg.inputValue('#mesVisto input[type=month]'), addMesStr(m, -1));
+  // Seletor: escolhe um mês qualquer.
+  const alvo = addMesStr(m, 5);
+  await pg.fill('#mesVisto input[type=month]', alvo);
+  await pg.dispatchEvent('#mesVisto input[type=month]', 'change');
+  assert.equal(await avaliar(pg, `mesVisto`), alvo);
+  await pg.click('#mesVisto .voltar');
+  assert.equal(await avaliar(pg, `mesVisto`), null);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Resumo: as setas e o seletor trocam o mês mostrado e o mês de referência', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, comEventuais(m));
+  await ir('resumo');
+  assert.match(await pg.innerText('#conteudo'), /Receitas previstas\s*R\$\s*300,00/i);
+  await pg.click('#resumoMes button[aria-label="Mês anterior"]');
+  assert.equal(await avaliar(pg, `S.config.mesRef`), addMesStr(m, -1));
+  assert.match(await pg.innerText('#conteudo'), /Receitas previstas\s*R\$\s*2\.500,00/i);
+  await pg.fill('#resumoMes input[type=month]', addMesStr(m, 2));
+  await pg.dispatchEvent('#resumoMes input[type=month]', 'change');
+  assert.equal(await avaliar(pg, `S.config.mesRef`), addMesStr(m, 2));
+  await pg.click('#resumoMes .voltar');
+  assert.equal(await avaliar(pg, `S.config.mesRef`), m);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Eventuais: editar traz os dados do item e troca o mês', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, comEventuais(m));
+  await ir('eventuais');
+  const ed = 'form[onsubmit="salvarEv(event)"]';
+  await pg.click(`button[onclick="editarEv('v1')"]`);
+  assert.deepEqual([await pg.inputValue(`${ed} [name=mes]`), await pg.inputValue(`${ed} [name=descricao]`), await pg.inputValue(`${ed} [name=tipo]`), await pg.inputValue(`${ed} [name=valor]`)],
+    [addMesStr(m, -1), 'Salário antigo', 'Receita', '2500']);
+  // Digita e cancela: a próxima edição não pode trazer o que foi digitado.
+  await pg.fill(`${ed} [name=descricao]`, 'Digitado e cancelado');
+  await pg.click(`${ed} button:has-text("Cancelar")`);
+  await pg.click(`button[onclick="editarEv('v2')"]`);
+  assert.equal(await pg.inputValue(`${ed} [name=descricao]`), 'Unimed');
+  await pg.click(`${ed} button:has-text("Cancelar")`);
+  await pg.click(`button[onclick="editarEv('v1')"]`);
+  await pg.fill(`${ed} [name=mes]`, m);
+  await pg.click(`${ed} button:not([type=button])`);
+  assert.equal(await avaliar(pg, `S.eventuais.find(e => e.id === 'v1').mes`), m);
+  // 300 de bônus + 2.500 que veio do mês anterior.
+  assert.equal(await avaliar(pg, `mesBase('${m}').re`), 2800);
+  assert.equal(await pg.$(ed), null);
+});
+
+/* ---------- Projeção: período e gráfico ---------- */
+test('Projeção: período de 6, 12, 24 e 36 meses muda gráfico, comparativo e detalhe', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, { config: { cartoes: ['Nubank'], primeiroMes: m }, recorrentes: [
+    { id: 's', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 2000, inicio: '2020-01-01', fim: '' }] });
+  await pg.evaluate(() => { setPeriodo(1); ir('projecao'); });
+  for (const n of [6, 12, 24, 36]) {
+    await pg.click(`#projOpcoes button:has-text("${n} meses")`);
+    assert.equal((await pg.$$('.proj-alvo')).length, n, `${n} meses no gráfico`);
+    assert.equal((await pg.$$('section.card table tbody tr')).length >= n, true);
+    assert.match(await pg.innerText('#conteudo'), new RegExp(`Análise detalhada mês a mês \\(${n} meses\\)`));
+  }
+  // Trimestral em 12 meses: 4 períodos, com o saldo acumulado do fim do último (2.000 × 12).
+  await pg.click('#projOpcoes button:has-text("12 meses")');
+  await pg.click('#projOpcoes button:has-text("Trimestral")');
+  assert.equal((await pg.$$('.proj-alvo')).length, 4);
+  assert.equal(await avaliar(pg, `projDados[3].acum`), 24000);
+  await pg.evaluate(() => setPeriodo(1));
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Projeção: o usuário escolhe o gráfico, e a escolha fica salva', async () => {
+  const m = await avaliar(pg, `mkOf(hoje())`);
+  await definirDados(pg, { config: { cartoes: ['Nubank'], primeiroMes: m }, recorrentes: [
+    { id: 's', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 2000, inicio: '2020-01-01', fim: '' },
+    { id: 'f', descricao: 'Aluguel', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 2500, inicio: '2020-01-01', fim: '' }] });
+  await pg.evaluate(() => { setPeriodo(1); ir('projecao'); setHorizProj(12); });
+  const conta = () => pg.evaluate(() => { const s = document.querySelector('#projGraf svg'); return {
+    colunas: s.querySelectorAll('path').length, linhas: s.querySelectorAll('polyline').length, area: s.querySelectorAll('polygon').length,
+    tracejada: s.querySelectorAll('[stroke-dasharray]').length }; });
+  await pg.click('#projOpcoes button:has-text("Colunas e saldo")');
+  assert.deepEqual(await conta(), { colunas: 24, linhas: 1, area: 0, tracejada: 0 });
+  await pg.click('#projOpcoes button:has-text("Linhas")');
+  assert.deepEqual(await conta(), { colunas: 0, linhas: 3, area: 0, tracejada: 1 });
+  await pg.click('#projOpcoes button:has-text("Área do saldo")');
+  assert.deepEqual(await conta(), { colunas: 0, linhas: 1, area: 1, tracejada: 0 });
+  await pg.click('#projOpcoes button:has-text("Sobra por período")');
+  assert.deepEqual(await conta(), { colunas: 12, linhas: 0, area: 0, tracejada: 0 });
+  // Eixo com valores redondos e o zero: sobra de −500/mês em 12 meses vai de −500 a 0.
+  assert.ok((await pg.$$eval('.proj-eixo', ts => ts.map(t => t.textContent))).includes('R$ 0'));
+  // A dica mostra os valores do período apontado; sobra de −500 por mês.
+  await pg.hover('.proj-alvo >> nth=2');
+  const dica = await pg.innerText('#projDica');
+  assert.match(dica, /Sobra\s*-R\$\s*500,00/);
+  assert.match(dica, /Saldo acumulado\s*-R\$\s*1\.500,00/);
+  // Recarregar a página mantém período e gráfico.
+  await pg.reload();
+  await pg.evaluate(() => ir('projecao'));
+  assert.deepEqual(await avaliar(pg, `[horizProj, tipoGrafico]`), [12, 'sobra']);
+  await pg.evaluate(() => { setGrafico('colunas'); });
+  assert.deepEqual(pg.erros, []);
+});
+
 test('Faturas: lista inclui meses antes da projeção com compras (até 12 meses) e abre no mês atual', async () => {
   await definirDados(pg, {
     config: { cartoes: ['Nubank'], primeiroMes: '2026-11' },
