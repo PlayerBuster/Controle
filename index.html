@@ -11,9 +11,9 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Controle Financeiro</title>
 <style>
-:root{--bg:#f5f6fa;--card:#fff;--ink:#1d2330;--muted:#6b7385;--line:#e3e6ee;--accent:#2f6fed;--good:#1f9d62;--bad:#d64545;--header:#1d2330;--aviso:#fff4d6;color-scheme:light}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0f1420;--card:#171e2c;--ink:#e7ebf3;--muted:#9aa4b8;--line:#2a3345;--accent:#4d86f5;--good:#2fbf7c;--bad:#ef6464;--header:#0a0e17;--aviso:#3a2f10;color-scheme:dark}}
-:root[data-theme="dark"]{--bg:#0f1420;--card:#171e2c;--ink:#e7ebf3;--muted:#9aa4b8;--line:#2a3345;--accent:#4d86f5;--good:#2fbf7c;--bad:#ef6464;--header:#0a0e17;--aviso:#3a2f10;color-scheme:dark}
+:root{--g-rec:#00908f;--g-desp:#d9730d;--g-saldo:#6d4fc4;--bg:#f5f6fa;--card:#fff;--ink:#1d2330;--muted:#6b7385;--line:#e3e6ee;--accent:#2f6fed;--good:#1f9d62;--bad:#d64545;--header:#1d2330;--aviso:#fff4d6;color-scheme:light}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--g-rec:#14a3a3;--g-desp:#d4751b;--g-saldo:#9575f0;--bg:#0f1420;--card:#171e2c;--ink:#e7ebf3;--muted:#9aa4b8;--line:#2a3345;--accent:#4d86f5;--good:#2fbf7c;--bad:#ef6464;--header:#0a0e17;--aviso:#3a2f10;color-scheme:dark}}
+:root[data-theme="dark"]{--g-rec:#14a3a3;--g-desp:#d4751b;--g-saldo:#9575f0;--bg:#0f1420;--card:#171e2c;--ink:#e7ebf3;--muted:#9aa4b8;--line:#2a3345;--accent:#4d86f5;--good:#2fbf7c;--bad:#ef6464;--header:#0a0e17;--aviso:#3a2f10;color-scheme:dark}
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:15px}
 header{background:var(--header);color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
@@ -63,6 +63,12 @@ details summary::-webkit-details-marker{display:none}
 .mes-fatura .rel{font-size:13px;opacity:.9}
 .mes-fatura button{background:rgba(255,255,255,.18);font-size:18px;line-height:1;padding:6px 12px}
 .mes-fatura button:disabled{opacity:.35;cursor:default}
+.mes-fatura input[type=month]{width:auto;max-width:190px;padding:3px 6px;font-weight:700;color:#fff;background:rgba(255,255,255,.18);border-color:transparent;color-scheme:dark}
+.mes-fatura button.voltar{font-size:12px;padding:3px 8px;margin-left:4px}
+/* Dica do gráfico da Projeção */
+.dica{position:absolute;top:6px;z-index:1;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5;pointer-events:none;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.25)}
+.dica b{display:block;margin-bottom:2px}
+.dica span{float:right;margin-left:14px}
 /* Calculadora flutuante */
 .calc-fab{position:fixed;right:16px;bottom:16px;z-index:5;width:52px;height:52px;border-radius:50%;font-size:24px;padding:0;box-shadow:0 3px 12px rgba(0,0,0,.3)}
 .calc{position:fixed;right:16px;bottom:80px;z-index:6;width:min(300px,calc(100vw - 32px));background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;box-shadow:0 6px 24px rgba(0,0,0,.3);display:grid;gap:8px}
@@ -511,6 +517,15 @@ let detalheAberto = false; // mantém a análise detalhada aberta entre redesenh
 const PERIODOS = { 1: 'Mensal', 3: 'Trimestral', 6: 'Semestral' };
 function setPeriodo(n) { periodoProj = n; render(); }
 
+// Quantos meses a Projeção mostra e qual gráfico: escolhas do usuário, lembradas neste navegador.
+const HORIZ_PROJ = [6, 12, 24, 36];
+const GRAFICOS = { colunas: 'Colunas e saldo', linhas: 'Linhas', area: 'Área do saldo', sobra: 'Sobra por período' };
+const lerPref = (k, ok, padrao) => { try { const v = localStorage.getItem(k); return v !== null && ok(v) ? v : padrao; } catch (e) { return padrao; } };
+let horizProj = Number(lerPref('cf-proj-horiz', v => HORIZ_PROJ.includes(Number(v)), 12));
+let tipoGrafico = lerPref('cf-proj-grafico', v => !!GRAFICOS[v], 'colunas');
+function setHorizProj(n) { horizProj = n; try { localStorage.setItem('cf-proj-horiz', String(n)); } catch (e) {} render(); }
+function setGrafico(t) { tipoGrafico = t; try { localStorage.setItem('cf-proj-grafico', t); } catch (e) {} render(); }
+
 function agruparPeriodos(rows, n) {
   const grupos = [];
   for (let i = 0; i < rows.length; i += n) {
@@ -527,37 +542,81 @@ function agruparPeriodos(rows, n) {
   return grupos;
 }
 
-function graficoProj(grupos) {
-  const W = 760, H = 300, P = { l: 78, r: 16, t: 14, b: 44 };
-  const valores = [0, ...grupos.flatMap(g => [g.rt, g.L, g.acum])];
-  const yMin = Math.min(...valores), yMax = Math.max(yMin + 1, ...valores);
+// Gráfico da Projeção, em um dos tipos de GRAFICOS. Todas as séries são em reais, no mesmo eixo.
+let projDados = [];
+function graficoProj(grupos, tipo = 'colunas') {
+  projDados = grupos;
+  const estreito = window.innerWidth < 600;
+  const W = estreito ? 360 : 760, H = estreito ? 240 : 300, P = { l: estreito ? 54 : 72, r: 12, t: 14, b: 34 };
+  const campos = { colunas: ['rt', 'L', 'acum'], linhas: ['rt', 'L', 'acum'], area: ['acum'], sobra: ['saldo'] }[tipo];
+  const valores = [0, ...grupos.flatMap(g => campos.map(c => g[c]))];
+  // Eixo em valores redondos, sempre passando pelo zero, que separa sobra de déficit.
+  const minV = Math.min(...valores), maxV = Math.max(...valores);
+  const bruto = (maxV - minV) / 4 || 1, base = 10 ** Math.floor(Math.log10(bruto)), f = bruto / base;
+  const passoY = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * base;
+  const yMin = Math.floor(minV / passoY) * passoY, yMax = Math.max(Math.ceil(maxV / passoY) * passoY, yMin + passoY);
   const y = v => P.t + (1 - (v - yMin) / (yMax - yMin)) * (H - P.t - P.b);
   const y0 = y(0);
   const gw = (W - P.l - P.r) / grupos.length;
-  const bw = Math.max(3, Math.min(20, gw * 0.36));
-  const passo = Math.ceil(grupos.length / 12);
-  const barra = (x, v, cor) => {
-    const yv = y(v);
-    return `<rect x="${x.toFixed(1)}" y="${Math.min(yv, y0).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, Math.abs(yv - y0)).toFixed(1)}" style="fill:${cor}"/>`;
+  const cxDe = i => P.l + i * gw + gw / 2;
+  const passo = Math.ceil(grupos.length / (estreito ? 6 : 12));
+  // Coluna ancorada no zero, com a ponta arredondada.
+  const coluna = (x, w, v, cor) => {
+    const yv = y(v), alt = Math.abs(yv - y0);
+    if (alt < 1) return `<rect x="${x.toFixed(1)}" y="${(y0 - 0.5).toFixed(1)}" width="${w.toFixed(1)}" height="1" style="fill:${cor}"/>`;
+    const r = Math.min(4, w / 2, alt), s = v >= 0 ? 1 : -1, ponta = yv + s * r;
+    return `<path d="M${x.toFixed(1)} ${y0.toFixed(1)}V${ponta.toFixed(1)}Q${x.toFixed(1)} ${yv.toFixed(1)} ${(x + r).toFixed(1)} ${yv.toFixed(1)}H${(x + w - r).toFixed(1)}Q${(x + w).toFixed(1)} ${yv.toFixed(1)} ${(x + w).toFixed(1)} ${ponta.toFixed(1)}V${y0.toFixed(1)}Z" style="fill:${cor}"/>`;
   };
-  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Receitas, despesas e saldo acumulado por período">`;
-  for (let k = 0; k <= 4; k++) {
-    const v = yMin + (yMax - yMin) * k / 4, yy = y(v).toFixed(1);
+  const pontos = c => grupos.map((g, i) => `${cxDe(i).toFixed(1)},${y(g[c]).toFixed(1)}`);
+  const linha = (c, cor, tracejada) => {
+    let s = `<polyline fill="none" stroke-width="2" stroke-linejoin="round" ${tracejada ? 'stroke-dasharray="6 4"' : ''} style="stroke:${cor}" points="${pontos(c).join(' ')}"/>`;
+    if (grupos.length <= 12) grupos.forEach((g, i) => { s += `<circle cx="${cxDe(i).toFixed(1)}" cy="${y(g[c]).toFixed(1)}" r="4" stroke-width="2" style="fill:${cor};stroke:var(--card)"/>`; });
+    return s;
+  };
+  const rotulos = { colunas: 'Receitas, despesas e saldo acumulado', linhas: 'Receitas, despesas e saldo acumulado', area: 'Saldo acumulado', sobra: 'Sobra por período' };
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${rotulos[tipo]} por período" onpointerleave="projDicaFim()">`;
+  for (let k = 0, n = Math.round((yMax - yMin) / passoY); k <= n; k++) {
+    const v = yMin + passoY * k, yy = y(v).toFixed(1);
     svg += `<line x1="${P.l}" x2="${W - P.r}" y1="${yy}" y2="${yy}" style="stroke:var(--line)"/>`;
-    svg += `<text x="${P.l - 8}" y="${yy}" dy="4" text-anchor="end" font-size="11" style="fill:var(--muted)">${abrevMoeda(v)}</text>`;
+    svg += `<text class="proj-eixo" x="${P.l - 6}" y="${yy}" dy="4" text-anchor="end" font-size="11" style="fill:var(--muted)">${abrevMoeda(v)}</text>`;
+  }
+  if (yMin < 0) svg += `<line x1="${P.l}" x2="${W - P.r}" y1="${y0.toFixed(1)}" y2="${y0.toFixed(1)}" stroke-width="1.5" style="stroke:var(--muted)"/>`;
+  if (tipo === 'colunas') {
+    const bw = Math.max(2, Math.min(20, gw * 0.3));
+    grupos.forEach((g, i) => { svg += coluna(cxDe(i) - bw - 1, bw, g.rt, 'var(--g-rec)') + coluna(cxDe(i) + 1, bw, g.L, 'var(--g-desp)'); });
+    svg += linha('acum', 'var(--g-saldo)');
+  } else if (tipo === 'linhas') {
+    svg += linha('rt', 'var(--g-rec)') + linha('L', 'var(--g-desp)', true) + linha('acum', 'var(--g-saldo)');
+  } else if (tipo === 'area') {
+    svg += `<polygon points="${cxDe(0).toFixed(1)},${y0.toFixed(1)} ${pontos('acum').join(' ')} ${cxDe(grupos.length - 1).toFixed(1)},${y0.toFixed(1)}" opacity="0.2" style="fill:var(--g-saldo)"/>`;
+    svg += linha('acum', 'var(--g-saldo)');
+  } else {
+    const bw = Math.max(3, Math.min(28, gw * 0.6));
+    grupos.forEach((g, i) => { svg += coluna(cxDe(i) - bw / 2, bw, g.saldo, 'var(--g-saldo)'); });
   }
   grupos.forEach((g, i) => {
-    const cx = P.l + i * gw + gw / 2;
-    svg += barra(cx - bw - 1, g.rt, 'var(--good)');
-    svg += barra(cx + 1, g.L, 'var(--bad)');
-    if (i % passo === 0) svg += `<text x="${cx.toFixed(1)}" y="${H - P.b + 16}" text-anchor="middle" font-size="10" style="fill:var(--muted)">${esc(g.curto)}</text>`;
+    if (i % passo === 0) svg += `<text x="${cxDe(i).toFixed(1)}" y="${H - P.b + 18}" text-anchor="middle" font-size="10" style="fill:var(--muted)">${esc(g.curto)}</text>`;
   });
-  const pts = grupos.map((g, i) => `${(P.l + i * gw + gw / 2).toFixed(1)},${y(g.acum).toFixed(1)}`);
-  svg += `<polyline fill="none" stroke-width="2.5" style="stroke:var(--accent)" points="${pts.join(' ')}"/>`;
+  svg += `<line id="projMira" y1="${P.t}" y2="${H - P.b}" visibility="hidden" style="stroke:var(--muted)"/>`;
+  // Áreas de toque de cada período: maiores que as marcas, para a dica funcionar no dedo e no mouse.
   grupos.forEach((g, i) => {
-    svg += `<circle cx="${(P.l + i * gw + gw / 2).toFixed(1)}" cy="${y(g.acum).toFixed(1)}" r="2.5" style="fill:var(--accent)"/>`;
+    svg += `<rect class="proj-alvo" x="${(P.l + i * gw).toFixed(1)}" y="${P.t}" width="${gw.toFixed(1)}" height="${H - P.t - P.b}" fill="transparent" onpointermove="projDica(event,${i},${cxDe(i).toFixed(1)})" onpointerdown="projDica(event,${i},${cxDe(i).toFixed(1)})"/>`;
   });
-  return svg + '</svg>';
+  return `<div id="projGraf" style="position:relative">${svg}</svg><div class="dica" id="projDica" hidden></div></div>`;
+}
+function projDica(ev, i, cx) {
+  const g = projDados[i], caixa = $('projGraf'), d = $('projDica'), mira = $('projMira');
+  if (!g || !d) return;
+  d.innerHTML = `<b>${esc(g.rotulo)}</b>Receitas <span>${brl(g.rt)}</span><br>Despesas <span>${brl(g.L)}</span><br>Sobra <span>${brl(g.saldo)}</span><br>Saldo acumulado <span>${brl(g.acum)}</span>`;
+  d.hidden = false;
+  const r = caixa.getBoundingClientRect(), x = ev.clientX - r.left;
+  d.style.left = `${Math.max(0, x + d.offsetWidth + 16 > r.width ? x - d.offsetWidth - 12 : x + 12)}px`;
+  mira.setAttribute('x1', cx); mira.setAttribute('x2', cx); mira.setAttribute('visibility', 'visible');
+}
+function projDicaFim() {
+  const d = $('projDica'), mira = $('projMira');
+  if (d) d.hidden = true;
+  if (mira) mira.setAttribute('visibility', 'hidden');
 }
 
 /* ---------- simulador de gasto (nada é salvo) ---------- */
@@ -931,10 +990,21 @@ function blocosSimulador() {
 V.simulador = () => simuladorBase() + blocosSimulador();
 
 V.projecao = () => {
-  const rows = projecao(36);
+  const rows = projecao(36).slice(0, horizProj);
   const grupos = agruparPeriodos(rows, periodoProj);
   const botoes = Object.entries(PERIODOS).map(([n, t]) =>
     `<button class="tab ${Number(n) === periodoProj ? 'on' : ''}" onclick="setPeriodo(${n})">${t}</button>`).join('');
+  const botoesH = HORIZ_PROJ.map(n =>
+    `<button class="tab ${n === horizProj ? 'on' : ''}" onclick="setHorizProj(${n})">${n} meses</button>`).join('');
+  const botoesG = Object.entries(GRAFICOS).map(([k, t]) =>
+    `<button class="tab ${k === tipoGrafico ? 'on' : ''}" onclick="setGrafico('${k}')">${t}</button>`).join('');
+  const legenda = { colunas: 1, linhas: 1 }[tipoGrafico]
+    ? `<div class="legenda">
+        <span><i class="sw" style="background:var(--g-rec)"></i>Receitas</span>
+        <span><i class="sw" style="background:var(--g-desp)"></i>Despesas${tipoGrafico === 'linhas' ? ' (tracejada)' : ''}</span>
+        <span><i class="sw" style="background:var(--g-saldo)"></i>Saldo acumulado</span>
+      </div>`
+    : `<p class="muted" style="margin:0 0 6px">${tipoGrafico === 'area' ? 'Saldo acumulado ao fim de cada período.' : 'Receitas menos despesas em cada período. Abaixo de zero, gastou mais do que recebeu.'}</p>`;
   const linhas = grupos.map(g => `<tr>
       <td>${g.rotulo}</td>
       <td class="num pos">${brl(g.rt)}</td><td class="num neg">${brl(g.L)}</td>
@@ -944,16 +1014,14 @@ V.projecao = () => {
     </tr>`).join('');
   return `
     <section class="card">
-      <div class="row" style="justify-content:space-between;margin-bottom:10px">
-        <h2 style="margin:0">Visão simplificada · ${PERIODOS[periodoProj]}</h2>
-        <div class="row">${botoes}</div>
+      <h2>Projeção de ${horizProj} meses · ${PERIODOS[periodoProj]}</h2>
+      <div style="display:grid;gap:8px;margin-bottom:12px" id="projOpcoes">
+        <div class="row"><span class="muted" style="min-width:64px">Período</span>${botoesH}</div>
+        <div class="row"><span class="muted" style="min-width:64px">Agrupar</span>${botoes}</div>
+        <div class="row"><span class="muted" style="min-width:64px">Gráfico</span>${botoesG}</div>
       </div>
-      <div class="legenda">
-        <span><i class="sw" style="background:var(--good)"></i>Receitas</span>
-        <span><i class="sw" style="background:var(--bad)"></i>Despesas</span>
-        <span><i class="sw" style="background:var(--accent)"></i>Saldo acumulado</span>
-      </div>
-      ${graficoProj(grupos)}
+      ${legenda}
+      ${graficoProj(grupos, tipoGrafico)}
     </section>
     <section class="card"><h2>Comparativo por período</h2><div class="scroll"><table>
       <thead><tr><th>Período</th><th class="num">Receitas</th><th class="num">Despesas</th><th class="num">Saldo</th>
@@ -961,14 +1029,34 @@ V.projecao = () => {
       <tbody>${linhas}</tbody>
     </table></div></section>
     <details class="card" ontoggle="detalheAberto = this.open" ${detalheAberto ? 'open' : ''}>
-      <summary style="cursor:pointer;font-weight:600">Análise detalhada mês a mês (36 meses) ▾</summary>
+      <summary style="cursor:pointer;font-weight:600">Análise detalhada mês a mês (${rows.length} meses) ▾</summary>
       <div style="margin-top:12px">${tabelaDetalhada(rows)}</div>
     </details>`;
 };
 
+// Faixa para escolher o mês visto: setas, seletor de mês e atalho para voltar ao mês atual.
+// fnPasso recebe +1 ou −1; fnIr recebe 'aaaa-mm'.
+function faixaMes(id, m, fnPasso, fnIr) {
+  const atual = mkOf(hoje());
+  return `<div class="mes-fatura" id="${id}">
+      <button type="button" onclick="${fnPasso}(-1)" aria-label="Mês anterior">‹</button>
+      <div style="text-align:center"><div class="rel">Você está vendo</div>
+        <input type="month" aria-label="Escolher o mês" value="${m}" onchange="if(this.value)${fnIr}(this.value)">
+        <span class="rel">${mesRelativo(m)}</span>${m !== atual ? `<button type="button" class="voltar" onclick="${fnIr}('${atual}')">Ir para o mês atual</button>` : ''}</div>
+      <button type="button" onclick="${fnPasso}(1)" aria-label="Próximo mês">›</button>
+    </div>`;
+}
+
 /* ---------- mês corrente ---------- */
+let mesVisto = null; // mês escolhido na aba "Mês atual"; null = o mês de hoje
+function mesVer(m) { mesVisto = m === mkOf(hoje()) ? null : m; render(); }
+function mesPasso(n) { mesVer(addM(mesVisto || mkOf(hoje()), n)); }
+function resumoVer(m) { setCfg('mesRef', m); }
+function resumoPasso(n) { resumoVer(addM(S.config.mesRef, n)); }
+
 V.mesatual = () => {
-  const m = mkOf(hoje());
+  const m = mesVisto || mkOf(hoje());
+  const ehAtual = m === mkOf(hoje());
   const dia = Number(hoje().slice(8, 10));
   const diasMes = new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0).getDate();
   const b = mesBase(m);
@@ -998,11 +1086,13 @@ V.mesatual = () => {
       <td>${fmtData(i.d)}</td><td>${esc(i.desc)}</td><td>${esc(i.cat)}</td><td>${esc(i.obs)}</td>
       <td class="num neg">${brl(i.v)}</td></tr>`).join('')
     || `<tr><td colspan="5" class="muted">Nenhum lançamento neste mês.</td></tr>`;
-  const emAndamento = dia < diasMes ? ' · mês em andamento (pontuação parcial)' : '';
+  const emAndamento = ehAtual && dia < diasMes ? ' · mês em andamento (pontuação parcial)' : '';
   const sub = sc.score == null ? 'Defina o orçamento do mês para pontuar' : `Gasto sem orçamento: ${brl(sc.semOrc)}${emAndamento}`;
   return `
+    ${faixaMes('mesVisto', m, 'mesPasso', 'mesVer')}
     <section class="grid">
-      ${card('Dia do mês', `${dia} de ${diasMes}`, `${Math.round(dia / diasMes * 100)}% do mês decorrido`)}
+      ${ehAtual ? card('Dia do mês', `${dia} de ${diasMes}`, `${Math.round(dia / diasMes * 100)}% do mês decorrido`)
+        : card('Mês', mNome(m), `${mesRelativo(m)} · ${diasMes} dias`)}
       ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
       ${card('Despesas previstas', brl(b.I), despesasTxt(b), 'neg')}
       ${card('Gasto lançado no mês', brl(exec), `No cartão (a pagar) ${brl(exec - aVistaMes(m))} · à vista ${brl(aVistaMes(m))} · ${Math.round(exec / Math.max(b.I, 1) * 100)}% das despesas previstas`)}
@@ -1030,9 +1120,10 @@ V.resumo = () => {
   const orc = orcEfetivo(m);
   const estouros = S.config.categorias.filter(c => (Number(orc[c]) || 0) > 0 && execCat(c, m) > orc[c]);
   return `
+    ${faixaMes('resumoMes', m, 'resumoPasso', 'resumoVer')}
     ${blocoScores(m)}
     <section class="grid">
-      ${card('Mês de referência', mNome(m), 'Altere em Configurações')}
+      ${card('Mês de referência', mNome(m), 'Altere na faixa acima')}
       ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
       ${card('Despesas previstas', brl(b.I), despesasTxt(b), 'neg')}
       ${card('Gasto lançado no mês', brl(exec), `No cartão (a pagar) ${brl(exec - aVistaMes(m))} · à vista ${brl(aVistaMes(m))}`)}
@@ -1063,7 +1154,7 @@ function tabelaDetalhada(rows) {
     </tr>`).join('');
   return `
     <section class="card">
-      <h2>Projeção mês a mês (36 meses)</h2>
+      <h2>Projeção mês a mês (${rows.length} meses)</h2>
       <p class="muted">Marque "Férias" no mês em que o orçamento paga também o mês seguinte. O mês seguinte fica zerado e a despesa cai no mês marcado.</p>
       <p class="muted">Faturas incluem os gastos lançados no cartão (pagos quando a fatura vence). À vista: Débito, Pix, Dinheiro, Boleto e Outros. Orçamento restante: o orçado de cada categoria menos o que já foi lançado nela no mês, para não contar duas vezes.</p>
       <div class="scroll"><table>
@@ -1782,22 +1873,49 @@ function blocoCenarios() {
     </section>`;
 }
 
+let evEdit = null;
+function editarEv(id) {
+  evEdit = id;
+  render();
+  const form = document.querySelector('form[onsubmit="salvarEv(event)"]');
+  if (form) {
+    form.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    setTimeout(() => form.elements.mes.focus({ preventScroll: true }), 300);
+  }
+}
+function cancelarEv() { evEdit = null; render(); }
+function salvarEv(e) {
+  e.preventDefault();
+  const f = e.target.elements, it = S.eventuais.find(x => x.id === evEdit);
+  if (!it) { evEdit = null; return render(); }
+  const valor = parseFloat(f.valor.value);
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  Object.assign(it, { mes: f.mes.value, descricao: f.descricao.value.trim(), tipo: f.tipo.value, valor });
+  evEdit = null;
+  commit();
+}
+
 V.eventuais = () => {
   const lista = [...S.eventuais].sort((a, b) => a.mes.localeCompare(b.mes));
   const linhas = lista.map(e => `<tr>
-      <td>${mNome(e.mes)}</td><td>${esc(e.tipo)}</td><td>${esc(e.descricao)}</td>
+      <td>${mNome(e.mes)} <span class="muted">(${mesRelativo(e.mes)})</span></td><td>${esc(e.tipo)}</td><td>${esc(e.descricao)}</td>
       <td class="num ${e.tipo === 'Receita' ? 'pos' : 'neg'}">${brl(e.valor)}</td>
-      <td class="num"><button class="danger small" onclick="excluir('eventuais','${e.id}')">Excluir</button></td>
+      <td class="num"><button class="small" onclick="editarEv('${e.id}')">Editar</button>
+      <button class="danger small" onclick="excluir('eventuais','${e.id}')">Excluir</button></td>
     </tr>`).join('') || `<tr><td colspan="5" class="muted">Nenhum evento.</td></tr>`;
+  const it = evEdit ? S.eventuais.find(x => x.id === evEdit) : null;
+  if (evEdit && !it) evEdit = null;
   return `
-    <section class="card"><h2>Novo evento pontual</h2>
-      <form class="fields" onsubmit="addEv(event)">
-        <label>Mês<input type="month" name="mes" value="${mkOf(hoje())}" required></label>
-        <label>Descrição<input type="text" name="descricao" required></label>
-        <label>Tipo<select name="tipo">${opts(['Receita', 'Despesa'])}</select></label>
-        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
-        <button>Adicionar</button>
+    <section class="card"><h2>${it ? 'Editar evento pontual' : 'Novo evento pontual'}</h2>
+      <form class="fields" onsubmit="${it ? 'salvarEv' : 'addEv'}(event)">
+        <label>Mês<input type="month" name="mes" value="${it ? esc(it.mes) : mkOf(hoje())}" required></label>
+        <label>Descrição<input type="text" name="descricao" value="${it ? esc(it.descricao) : ''}" required></label>
+        <label>Tipo<select name="tipo">${opts(['Receita', 'Despesa'], it ? it.tipo : undefined)}</select></label>
+        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" value="${it ? it.valor : ''}" required></label>
+        <button>${it ? 'Salvar alterações' : 'Adicionar'}</button>
+        ${it ? '<button type="button" class="small" onclick="cancelarEv()">Cancelar</button>' : ''}
       </form>
+      <p class="muted" style="margin-top:10px">O evento só conta no mês escolhido. Para ver outro mês, use a faixa no topo das abas Mês atual e Resumo. Receita que se repete todo mês, como o salário, fica melhor em Recorrentes.</p>
     </section>
     <section class="card"><div class="scroll"><table>
       <thead><tr><th>Mês</th><th>Tipo</th><th>Descrição</th><th class="num">Valor</th><th></th></tr></thead>
@@ -2042,9 +2160,9 @@ function calcUsar() {
    Ao lançar, o cursor volta ao primeiro campo do mesmo formulário; o que foi digitado
    e ainda não lançado fica salvo no navegador (sem senhas nem dados de sincronização). */
 const RASC_KEY = 'cf-rascunhos';
-// Formulários de edição (salvarLanc, salvarRec) também ficam sem rascunho: eles servem para qualquer item,
+// Formulários de edição (salvarLanc, salvarRec, salvarEv) também ficam sem rascunho: eles servem para qualquer item,
 // e um rascunho de outra edição sobrescreveria os dados do item aberto.
-const SEM_RASCUNHO = /salvarClientId|trocarSenha|conectar|senha|^salvar(Lanc|Rec)\(/i;
+const SEM_RASCUNHO = /salvarClientId|trocarSenha|conectar|senha|^salvar(Lanc|Rec|Ev)\(/i;
 let ultimoEnvio = null;
 document.addEventListener('submit', e => {
   const k = e.target && e.target.getAttribute && e.target.getAttribute('onsubmit');
