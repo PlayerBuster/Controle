@@ -73,6 +73,18 @@ table.exp-bloco th{background:#a9d08e;color:#1d2330;text-align:center;border:1px
 table.exp-bloco td{border:1px solid var(--line);white-space:nowrap;padding:3px 6px}
 .exp-ano{font-weight:400;font-size:12px}
 table.exp-bloco tr.exp-vazia td{height:12px;padding:0;border-left:0;border-right:0}
+.fp-sub{font-size:14px;margin:14px 0 6px}
+.fp-status{margin:0}
+@media print{
+  body.imprimindo{background:#fff}
+  body.imprimindo>*:not(#impressao){display:none!important}
+  body.imprimindo #impressao{display:block!important}
+  #impressao h3{margin:6px 0;font-size:12px;color:#000}
+  #impressao .exp-grade{flex-wrap:wrap;gap:8px}
+  #impressao table.exp-bloco{min-width:0;break-inside:avoid;border:1px solid #000}
+  #impressao table.exp-bloco td,#impressao table.exp-bloco th{color:#000;border:1px solid #000;font-size:9px;padding:1px 4px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  #impressao table.exp-bloco tr.exp-vazia td{height:8px;border-left:0;border-right:0}
+}
 /* Dica do gráfico da Projeção */
 .dica{position:absolute;top:6px;z-index:1;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5;pointer-events:none;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.25)}
 .dica b{display:block;margin-bottom:2px}
@@ -108,6 +120,7 @@ table.exp-bloco tr.exp-vazia td{height:12px;padding:0;border-left:0;border-right
 <main id="conteudo"></main>
 <button class="calc-fab" id="calcBtn" onclick="calcAbrir()" aria-label="Calculadora" title="Calculadora">🧮</button>
 <div class="calc" id="calc" hidden></div>
+<div id="impressao" hidden></div>
 <input type="file" id="fx" accept=".xlsx,.xls" hidden>
 <input type="file" id="fj" accept=".json,application/json" hidden>
 
@@ -162,6 +175,7 @@ function blank() {
     movConta: [],
     checklist: {},
     planoFerias: [],
+    feriasPlanos: [],
     eventuais: [],
     lancamentos: [],
     ferias: {},
@@ -289,10 +303,45 @@ const orcRestante = m => {
   return S.config.categorias.reduce((a, c) => a + Math.max(0, (Number(o[c]) || 0) - avulsosCat(c, m)), 0);
 };
 
+/* Período de férias (S.feriasPlanos): datas e valores digitados pelo usuário. Só altera a Projeção se estiver
+   confirmado; caso contrário, é simulação. Confirmado, nos meses afetados as receitas normais saem (menos as
+   marcadas em naoSubstitui) e entram os salários residuais. Férias, 13º e gastos extras entram no 1º mês afetado.
+   { id, inicio, fim, valorFerias, residuais: { mês: valor }, tem13, valor13, extras: [{ id, nome, valor }],
+     naoSubstitui: [ids], confirmado } */
+const feriasConfirmadas = () => (S.feriasPlanos || []).filter(p => p.confirmado);
+function competenciasFerias(p) {
+  const a = mkOf(p.inicio);
+  return Array.from({ length: mIdx(mkOf(p.fim)) - mIdx(a) + 1 }, (_, i) => addM(a, i));
+}
+const diasNoMes = m => new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0).getDate();
+function diasTrabalhados(p, m) {
+  const ini = m + '-01', fim = `${m}-${pad(diasNoMes(m))}`;
+  const a = p.inicio > ini ? p.inicio : ini, b = p.fim < fim ? p.fim : fim;
+  return diasNoMes(m) - (a <= b ? diasEntre(a, b) + 1 : 0);
+}
+const receitasNormais = m => [
+  ...S.recorrentes.filter(r => r.grupo === 'Receita' && ativo(r, m)),
+  ...S.eventuais.filter(e => e.tipo === 'Receita' && e.mes === m)];
+function ajusteFerias(m) {
+  const aj = { receita: 0, despesa: 0 };
+  feriasConfirmadas().forEach(p => {
+    const comps = competenciasFerias(p);
+    if (!comps.includes(m)) return;
+    aj.receita += Number((p.residuais || {})[m]) || 0;
+    receitasNormais(m).forEach(x => { if (!(p.naoSubstitui || []).includes(x.id)) aj.receita -= x.valor; });
+    if (m === comps[0]) {
+      aj.receita += (Number(p.valorFerias) || 0) + (p.tem13 ? Number(p.valor13) || 0 : 0);
+      aj.despesa += (p.extras || []).reduce((a, x) => a + (Number(x.valor) || 0), 0);
+    }
+  });
+  return aj;
+}
+
 function mesBase(m) {
   const rf = sumRec('Receita', m), re = sumEv('Receita', m), ef = sumRec('Fixo', m);
   const fat = faturaTotal(m), av = aVistaMes(m), ed = sumEv('Despesa', m), ov = orcRestante(m);
-  return { rf, re, rt: rf + re, ef, fat, av, ed, ov, I: ef + fat + av + ed + ov };
+  const aj = ajusteFerias(m);
+  return { rf, re, ferR: aj.receita, ferD: aj.despesa, rt: rf + re + aj.receita, ef, fat, av, ed, ov, I: ef + fat + av + ed + ov + aj.despesa };
 }
 
 // Aba Conta: extrato com saldo inicial, gastos em Débito/Pix/Dinheiro (saem sozinhos) e movimentações manuais.
@@ -1109,7 +1158,7 @@ V.mesatual = () => {
     <section class="grid">
       ${ehAtual ? card('Dia do mês', `${dia} de ${diasMes}`, `${Math.round(dia / diasMes * 100)}% do mês decorrido`)
         : card('Mês', mNome(m), `${mesRelativo(m)} · ${diasMes} dias`)}
-      ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
+      ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}${b.ferR ? ` · ajuste das férias ${brl(b.ferR)}` : ''}`, 'pos')}
       ${card('Despesas previstas', brl(b.I), despesasTxt(b), 'neg')}
       ${cardDiferenca(b)}
       ${card('Gasto lançado no mês', brl(exec), `No cartão (a pagar) ${brl(exec - aVistaMes(m))} · à vista ${brl(aVistaMes(m))} · ${Math.round(exec / Math.max(b.I, 1) * 100)}% das despesas previstas`)}
@@ -1140,7 +1189,7 @@ function avisoSemReceita(m) {
     : ' Se você recebe todo mês, cadastre o valor em Recorrentes.'}</span>
     <button class="small" onclick="ir('${fora.length ? 'eventuais' : 'recorrentes'}')">Abrir ${fora.length ? 'Eventuais' : 'Recorrentes'}</button></div>`;
 }
-const despesasTxt = b =>`Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · à vista ${brl(b.av)} · eventuais ${brl(b.ed)} · orçamento restante ${brl(b.ov)}`;
+const despesasTxt = b =>`Fixas ${brl(b.ef)} · faturas ${brl(b.fat)} · à vista ${brl(b.av)} · eventuais ${brl(b.ed)} · orçamento restante ${brl(b.ov)}${b.ferD ? ` · extras das férias ${brl(b.ferD)}` : ''}`;
 
 V.resumo = () => {
   const m = S.config.mesRef;
@@ -1157,7 +1206,7 @@ V.resumo = () => {
     ${blocoScores(m)}
     <section class="grid">
       ${card('Mês de referência', mNome(m), 'Altere na faixa acima')}
-      ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}`, 'pos')}
+      ${card('Receitas previstas', brl(b.rt), `Fixas ${brl(b.rf)} · eventuais ${brl(b.re)}${b.ferR ? ` · ajuste das férias ${brl(b.ferR)}` : ''}`, 'pos')}
       ${card('Despesas previstas', brl(b.I), despesasTxt(b), 'neg')}
       ${cardDiferenca(b)}
       ${card('Gasto lançado no mês', brl(exec), `No cartão (a pagar) ${brl(exec - aVistaMes(m))} · à vista ${brl(aVistaMes(m))}`)}
@@ -1191,6 +1240,7 @@ function tabelaDetalhada(rows) {
       <h2>Projeção mês a mês (${rows.length} meses)</h2>
       <p class="muted">Marque "Férias" no mês em que o orçamento paga também o mês seguinte. O mês seguinte fica zerado e a despesa cai no mês marcado.</p>
       <p class="muted">Faturas incluem os gastos lançados no cartão (pagos quando a fatura vence). À vista: Débito, Pix, Dinheiro, Boleto e Outros. Orçamento restante: o orçado de cada categoria menos o que já foi lançado nela no mês, para não contar duas vezes.</p>
+      ${feriasConfirmadas().length ? '<p class="muted">Há férias confirmadas: nos meses afetados, Total receitas e Base do mês já trazem os valores da aba Férias, que não aparecem em Receitas fixas e eventuais.</p>' : ''}
       <div class="scroll"><table>
         <thead><tr>
           <th>Mês</th><th class="num">Receitas fixas</th><th class="num">Receitas eventuais</th><th class="num">Total receitas</th>
@@ -1680,7 +1730,7 @@ V.faturas = () => {
   const iMes = meses.indexOf(faturaMes);
   const blocos = linhasFatura(faturaMes);
   const total = blocos.reduce((t, b) => t + b.total, 0);
-  const receita = sumRec('Receita', faturaMes) + sumEv('Receita', faturaMes);
+  const receita = mesBase(faturaMes).rt;
   const pct = receita > 0 ? total / receita : null;
   const prox = Array.from({ length: 12 }, (_, i) => addM(p0, i));
   return `
@@ -2209,7 +2259,9 @@ V.calendario = () => {
    total, e no fim Gastos (total), Receita e Delta (receita − gastos), em fórmulas.
    A soma de cada mês é igual às "Despesas previstas" (mesBase): faturas pelo valor global, contas fixas,
    despesas eventuais, gastos à vista e o orçamento que ainda falta gastar em cada categoria.
-   Fica uma folha por ano, porque o título do mês não tem o ano. */
+   Fica uma folha por ano, porque o título do mês não tem o ano.
+   Férias confirmadas ganham um bloco "FÉRIAS (DEZEMBRO - JANEIRO)" logo depois do 1º mês afetado, somando os
+   gastos dos meses afetados e separando as receitas. Os blocos dos meses mantêm a receita normal, sem as férias. */
 const MESES_LONGOS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 const nomeMesLongo = m => MESES_LONGOS[Number(m.slice(5, 7)) - 1];
 const tituloBlocoMes = m => `${nomeMesLongo(m)} (${nomeMesLongo(addM(m, 1))})`;
@@ -2233,43 +2285,84 @@ function gastosDoMes(m) {
 function gastos36(ini) {
   const meses = Array.from({ length: 36 }, (_, i) => addM(ini, i));
   const porMes = meses.map(m => ({ m, itens: gastosDoMes(m) }));
-  const nomes = [...new Set(porMes.flatMap(({ itens }) => itens.map(x => x[1])))]
+  // Inclui os meses de férias confirmadas que passam do fim dos 36 meses, para o bloco FÉRIAS não perder gastos.
+  const deFerias = feriasConfirmadas().filter(p => meses.includes(competenciasFerias(p)[0]))
+    .flatMap(p => competenciasFerias(p)).filter(m => !meses.includes(m)).flatMap(m => gastosDoMes(m));
+  const nomes = [...new Set([...porMes.flatMap(({ itens }) => itens), ...deFerias].map(x => x[1]))]
     .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
   const c2 = v => Math.round(v * 100) / 100;
   return { nomes, meses: porMes.map(({ m, itens }) => {
     const valores = nomes.map(n => c2(itens.filter(x => x[1] === n).reduce((a, x) => a + x[2], 0)));
-    const gastos = c2(valores.reduce((a, v) => a + v, 0)), receita = c2(mesBase(m).rt);
+    const b = mesBase(m); // receita normal do mês; os valores das férias ficam no bloco FÉRIAS
+    const gastos = c2(valores.reduce((a, v) => a + v, 0)), receita = c2(b.rf + b.re);
     return { m, valores, gastos, receita, delta: c2(receita - gastos) };
   }) };
 }
+// Bloco consolidado de um período de férias. Sem "nomes", usa só os gastos dos meses afetados.
+function blocoFerias(p, nomesBase) {
+  const c2 = v => Math.round(v * 100) / 100, M = m => nomeMesLongo(m).toUpperCase();
+  const comps = competenciasFerias(p), itens = comps.flatMap(m => gastosDoMes(m));
+  const nomes = nomesBase || [...new Set(itens.map(x => x[1]))].sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+  const valores = nomes.map(n => c2(itens.filter(x => x[1] === n).reduce((a, x) => a + x[2], 0)));
+  const extras = (p.extras || []).map(x => ({ nome: x.nome, valor: Number(x.valor) || 0 }));
+  const receitas = [{ nome: 'RECEITA FÉRIAS', valor: Number(p.valorFerias) || 0 }];
+  comps.forEach(m => {
+    const dias = diasTrabalhados(p, m), v = Number((p.residuais || {})[m]) || 0;
+    if (dias > 0 || v) receitas.push({ nome: `RECEITA ${M(m)} (${M(addM(m, 1))}) ${dias} ${dias === 1 ? 'dia' : 'dias'}`, valor: v });
+  });
+  if (p.tem13) receitas.push({ nome: 'RECEITA DÉCIMO TERCEIRO', valor: Number(p.valor13) || 0 });
+  const gastos = c2(valores.reduce((a, v) => a + v, 0) + extras.reduce((a, x) => a + x.valor, 0));
+  const totalReceitas = c2(receitas.reduce((a, x) => a + x.valor, 0));
+  const pgto = comps.map(m => M(addM(m, 1)));
+  return { tipo: 'ferias', m: comps[0], titulo: `FÉRIAS (${pgto.length > 1 ? `${pgto[0]} - ${pgto[pgto.length - 1]}` : pgto[0]})`,
+    nomes, valores, extras, receitas, gastos, totalReceitas, delta: c2(totalReceitas - gastos) };
+}
+// Blocos na ordem da exportação: cada mês e, depois do 1º mês afetado, o bloco das férias confirmadas.
+function sequenciaGastos(ini) {
+  const { nomes, meses } = gastos36(ini);
+  const conf = feriasConfirmadas();
+  return { nomes, blocos: meses.flatMap(x => [{ tipo: 'mes', titulo: tituloBlocoMes(x.m), ...x },
+    ...conf.filter(p => competenciasFerias(p)[0] === x.m).map(p => blocoFerias(p, nomes))]) };
+}
 const FMT_GASTO = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
 function abasGastos(ini) {
-  const { nomes, meses } = gastos36(ini);
-  const anos = [...new Set(meses.map(x => x.m.slice(0, 4)))];
+  const { nomes, blocos } = sequenciaGastos(ini);
+  const col = i => { let s = ''; i += 1; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; };
+  const anos = [...new Set(blocos.map(x => x.m.slice(0, 4)))];
   return anos.map(ano => {
-    const doAno = meses.filter(x => x.m.slice(0, 4) === ano);
-    // Título, gastos, uma linha em branco e os três totais. Números de linha do Excel (começam em 1):
-    const fimItens = nomes.length + 1, lGastos = nomes.length + 3, lReceita = lGastos + 1, lDelta = lGastos + 2;
-    const linhas = Array.from({ length: lDelta }, () => []);
+    const doAno = blocos.filter(x => x.m.slice(0, 4) === ano);
+    // Título, gastos (mais os extras das férias), uma linha em branco e os totais. Linhas do Excel (começam em 1):
+    const maxExtras = Math.max(0, ...doAno.map(x => (x.extras || []).length));
+    const fimItens = nomes.length + maxExtras + 1, lGastos = fimItens + 2;
+    const linhas = [];
+    const put = (l, c, nome, valor) => {
+      for (let i = linhas.length; i < l; i++) linhas[i] = [];
+      linhas[l - 1][c] = { v: nome, tema: 'linha' };
+      linhas[l - 1][c + 1] = typeof valor === 'object' ? { ...valor, tema: 'linha' } : { v: valor, z: FMT_GASTO, tema: 'linha' };
+    };
+    linhas[0] = [];
     const larguras = [], mesclas = [];
     doAno.forEach((x, k) => {
       const c = k * 3; // nome, valor e uma coluna de separação
-      const col = i => { let s = ''; i += 1; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; };
-      linhas[0][c] = { v: tituloBlocoMes(x.m), tema: 'titulo' };
+      linhas[0][c] = { v: x.titulo, tema: 'titulo' };
       linhas[0][c + 1] = { v: '', tema: 'titulo' };
       mesclas.push(`${col(c)}1:${col(c + 1)}1`);
-      nomes.forEach((n, i) => {
-        linhas[i + 1][c] = { v: n, tema: 'linha' };
-        linhas[i + 1][c + 1] = { v: x.valores[i], z: FMT_GASTO, tema: 'linha' };
-      });
+      nomes.forEach((n, i) => put(i + 2, c, n, x.valores[i]));
       const v = col(c + 1);
-      linhas[lGastos - 1][c] = { v: 'Gastos', tema: 'linha' };
-      linhas[lGastos - 1][c + 1] = { ...F(`SUM(${v}2:${v}${fimItens})`, x.gastos, FMT_GASTO), tema: 'linha' };
-      linhas[lReceita - 1][c] = { v: 'Receita', tema: 'linha' };
-      linhas[lReceita - 1][c + 1] = { v: x.receita, z: FMT_GASTO, tema: 'linha' };
-      linhas[lDelta - 1][c] = { v: 'Delta', tema: 'linha' };
-      linhas[lDelta - 1][c + 1] = { ...F(`${v}${lReceita}-${v}${lGastos}`, x.delta, FMT_GASTO), tema: 'linha' };
-      larguras.push(Math.max(16, ...nomes.map(n => n.length + 2)), 14, 3);
+      const fGastos = F(`SUM(${v}2:${v}${fimItens})`, x.gastos, FMT_GASTO);
+      if (x.tipo === 'ferias') {
+        x.extras.forEach((e, j) => put(nomes.length + 2 + j, c, e.nome, e.valor));
+        put(lGastos, c, 'Gastos', fGastos);
+        x.receitas.forEach((r, j) => put(lGastos + 1 + j, c, r.nome, r.valor));
+        const fim = lGastos + x.receitas.length;
+        put(fim + 2, c, 'DELTA', F(`SUM(${v}${lGastos + 1}:${v}${fim})-${v}${lGastos}`, x.delta, FMT_GASTO));
+        larguras.push(Math.max(16, ...nomes.map(n => n.length + 2), ...x.extras.map(e => e.nome.length + 2), ...x.receitas.map(r => r.nome.length + 2)), 14, 3);
+      } else {
+        put(lGastos, c, 'Gastos', fGastos);
+        put(lGastos + 1, c, 'Receita', x.receita);
+        put(lGastos + 2, c, 'Delta', F(`${v}${lGastos + 1}-${v}${lGastos}`, x.delta, FMT_GASTO));
+        larguras.push(Math.max(16, ...nomes.map(n => n.length + 2)), 14, 3);
+      }
     });
     return { nome: ano, linhas, larguras, mesclas };
   });
@@ -2279,23 +2372,47 @@ const expMes = () => expIni || addM(mkOf(hoje()), -1);
 function exportarGastos() {
   XL.baixar(XL.gerar(abasGastos(expMes())), `gastos-36-meses-${expMes()}.xlsx`);
 }
+const valorBloco = v => (v ? brl(v) : 'R$ -');
+// Um bloco em HTML, igual ao do Excel. Usado na prévia, no PDF e na aba Férias.
+function htmlBlocoGastos(x, nomes, comAno = true) {
+  const itens = nomes.map((n, i) => `<tr><td>${esc(n)}</td><td class="num">${valorBloco(x.valores[i])}</td></tr>`).join('');
+  const ano = comAno ? ` <span class="exp-ano">${x.m.slice(0, 4)}</span>` : '';
+  const vazia = '<tr class="exp-vazia"><td colspan="2"></td></tr>';
+  const fim = x.tipo === 'ferias'
+    ? `${x.extras.map(e => `<tr><td>${esc(e.nome)}</td><td class="num">${valorBloco(e.valor)}</td></tr>`).join('')}${vazia}
+       <tr><td>Gastos</td><td class="num">${valorBloco(x.gastos)}</td></tr>
+       ${x.receitas.map(r => `<tr><td>${esc(r.nome)}</td><td class="num">${valorBloco(r.valor)}</td></tr>`).join('')}${vazia}
+       <tr><td>DELTA</td><td class="num">${valorBloco(x.delta)}</td></tr>`
+    : `${vazia}<tr><td>Gastos</td><td class="num">${valorBloco(x.gastos)}</td></tr>
+       <tr><td>Receita</td><td class="num">${valorBloco(x.receita)}</td></tr>
+       <tr><td>Delta</td><td class="num">${valorBloco(x.delta)}</td></tr>`;
+  return `<table class="exp-bloco ${x.tipo === 'ferias' ? 'exp-ferias' : ''}"><thead><tr><th colspan="2">${esc(x.titulo)}${ano}</th></tr></thead><tbody>${itens}${fim}</tbody></table>`;
+}
+// PDF: abre a impressão do navegador só com os blocos, em paisagem. É lá que se escolhe "Salvar como PDF".
+function exportarGastosPDF() {
+  const { nomes, blocos } = sequenciaGastos(expMes());
+  const anos = [...new Set(blocos.map(x => x.m.slice(0, 4)))];
+  $('impressao').innerHTML = anos.map(a => `<h3>${a}</h3><div class="exp-grade">${blocos.filter(x => x.m.slice(0, 4) === a).map(x => htmlBlocoGastos(x, nomes, false)).join('')}</div>`).join('');
+  const pagina = document.createElement('style');
+  pagina.textContent = '@page{size:A4 landscape;margin:8mm}';
+  document.head.appendChild(pagina);
+  document.body.classList.add('imprimindo');
+  const fim = () => { document.body.classList.remove('imprimindo'); pagina.remove(); $('impressao').innerHTML = ''; window.removeEventListener('afterprint', fim); };
+  window.addEventListener('afterprint', fim);
+  window.print();
+}
 
 V.exportar = () => {
-  const { nomes, meses } = gastos36(expMes());
-  const blocos = meses.map(x => `<table class="exp-bloco">
-      <thead><tr><th colspan="2">${tituloBlocoMes(x.m)} <span class="exp-ano">${x.m.slice(0, 4)}</span></th></tr></thead>
-      <tbody>${nomes.map((n, i) => `<tr><td>${esc(n)}</td><td class="num">${x.valores[i] ? brl(x.valores[i]) : 'R$ -'}</td></tr>`).join('')}
-        <tr class="exp-vazia"><td colspan="2"></td></tr>
-        <tr><td>Gastos</td><td class="num">${x.gastos ? brl(x.gastos) : 'R$ -'}</td></tr>
-        <tr><td>Receita</td><td class="num">${x.receita ? brl(x.receita) : 'R$ -'}</td></tr>
-        <tr><td>Delta</td><td class="num">${x.delta ? brl(x.delta) : 'R$ -'}</td></tr></tbody>
-    </table>`).join('');
+  const { nomes, blocos: seq } = sequenciaGastos(expMes());
+  const blocos = seq.map(x => htmlBlocoGastos(x, nomes)).join('');
   return `
-    <section class="card"><h2>Exportar gastos para o Excel</h2>
+    <section class="card"><h2>Exportar gastos</h2>
       <div class="filtros" style="grid-template-columns:repeat(auto-fit,minmax(170px,240px))">
         <label>Primeiro mês<input type="month" id="expIni" value="${expMes()}" onchange="if(this.value){expIni=this.value;render()}"></label>
         <button id="expBaixar" style="height:38px" onclick="exportarGastos()">Exportar 36 meses (.xlsx)</button>
+        <button id="expPDF" style="height:38px" onclick="exportarGastosPDF()">Imprimir ou salvar em PDF</button>
       </div>
+      ${feriasConfirmadas().length ? '<p class="muted" style="margin-top:10px">Férias confirmadas aparecem em um bloco próprio, logo depois do primeiro mês afetado, com os gastos dos meses somados e as receitas separadas. Os blocos dos meses continuam com a receita normal.</p>' : ''}
       <p class="muted" style="margin-top:10px">Um bloco por mês e uma folha por ano, com os gastos em ordem alfabética, pelo nome e o valor total. No fim de cada mês: Gastos (o total), Receita e Delta (receita menos gastos). Faturas aparecem pelo valor global de cada cartão. Sem gasto no mês, o valor aparece como "R$ -".</p>
       <p class="muted">O total de Gastos é igual às Despesas previstas, por isso o orçamento que ainda falta gastar entra com o nome da categoria. Gastos e Delta são fórmulas: se você mudar um valor no Excel, eles se atualizam.</p>
     </section>
@@ -2303,6 +2420,132 @@ V.exportar = () => {
       ${nomes.length ? `<div class="scroll"><div class="exp-grade" id="expPrevia">${blocos}</div></div>` : '<p class="muted">Nenhum gasto nesses 36 meses.</p>'}
     </section>`;
 };
+
+/* ---------- período de férias: datas, meses afetados e valores ---------- */
+const fpPlano = id => (S.feriasPlanos || []).find(x => x.id === id);
+function somaDias(iso, n) {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+// Ao informar o início, sugere 30 dias de férias; o fim pode ser alterado.
+function fpSugerirFim(form) {
+  const f = form.elements;
+  if (f.inicio.value) f.fim.value = somaDias(f.inicio.value, 29);
+}
+function addPeriodoFerias(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  if (!f.inicio.value || !f.fim.value) return alert('Informe o início e o fim das férias.');
+  if (f.fim.value < f.inicio.value) return alert('O fim das férias não pode ser antes do início.');
+  S.feriasPlanos = [...(S.feriasPlanos || []), { id: uid(), inicio: f.inicio.value, fim: f.fim.value, valorFerias: null, residuais: {},
+    tem13: false, valor13: null, extras: [], naoSubstitui: [], confirmado: false }];
+  commit();
+}
+const fpNumero = v => { const n = parseFloat(v); return n >= 0 ? n : null; };
+function fpData(id, campo, valor) {
+  const p = fpPlano(id);
+  if (!p || !valor) return render();
+  const novo = { ...p, [campo]: valor };
+  if (novo.fim < novo.inicio) { alert('O fim das férias não pode ser antes do início.'); return render(); }
+  p[campo] = valor;
+  commit();
+}
+function fpCampo(id, campo, valor) { const p = fpPlano(id); if (p) { p[campo] = fpNumero(valor); commit(); } }
+function fpResidual(id, m, valor) {
+  const p = fpPlano(id);
+  if (!p) return;
+  const n = fpNumero(valor);
+  p.residuais = { ...(p.residuais || {}) };
+  if (n === null) delete p.residuais[m]; else p.residuais[m] = n;
+  commit();
+}
+function fp13(id, valor) { const p = fpPlano(id); if (p) { p.tem13 = valor === 'sim'; commit(); } }
+function fpSubst(id, rid, substitui) {
+  const p = fpPlano(id);
+  if (!p) return;
+  const fora = (p.naoSubstitui || []).filter(x => x !== rid);
+  p.naoSubstitui = substitui ? fora : [...fora, rid];
+  commit();
+}
+function addExtraFerias(e, id) {
+  e.preventDefault();
+  const p = fpPlano(id), f = e.target.elements, nome = f.nome.value.trim(), valor = fpNumero(f.valor.value);
+  if (!p) return;
+  if (!nome) return alert('Informe o nome do gasto.');
+  if (valor === null) return alert('Informe o valor (pode ser zero).');
+  p.extras = [...(p.extras || []), { id: uid(), nome, valor }];
+  commit();
+}
+function delExtraFerias(id, eid) { const p = fpPlano(id); if (p) { p.extras = (p.extras || []).filter(x => x.id !== eid); commit(); } }
+// Só confirma com os valores preenchidos: confirmar é o que leva as férias para a Projeção.
+function fpConfirmar(id) {
+  const p = fpPlano(id);
+  if (!p) return;
+  const comps = competenciasFerias(p), faltam = [];
+  if (p.valorFerias == null) faltam.push('o valor das férias');
+  comps.forEach(m => { if (diasTrabalhados(p, m) > 0 && (p.residuais || {})[m] == null) faltam.push(`o salário residual de ${mNome(m)}`); });
+  if (p.tem13 && p.valor13 == null) faltam.push('o valor do 13º');
+  if (faltam.length) return alert(`Para confirmar, informe ${faltam.join(', ')}.`);
+  const choque = feriasConfirmadas().find(o => o.id !== id && competenciasFerias(o).some(m => comps.includes(m)));
+  if (choque) return alert(`Estas férias usam um mês das férias confirmadas de ${fmtData(choque.inicio)} a ${fmtData(choque.fim)}. Volte aquelas para simulação antes de confirmar estas.`);
+  p.confirmado = true;
+  commit();
+}
+function fpSimular(id) { const p = fpPlano(id); if (p) { p.confirmado = false; commit(); } }
+
+function htmlPeriodoFerias(p) {
+  const comps = competenciasFerias(p), b = blocoFerias(p);
+  const dias = diasEntre(p.inicio, p.fim) + 1;
+  const receitas = comps.flatMap(m => receitasNormais(m).map(x => ({ x, m })));
+  const unicas = receitas.filter((r, i) => receitas.findIndex(o => o.x.id === r.x.id) === i);
+  const num = (id, rotulo, valor, acao) => `<label>${rotulo}<input type="number" step="0.01" min="0" id="${id}" value="${valor != null ? valor : ''}" onchange="${acao}"></label>`;
+  return `<section class="card fp-plano" data-id="${p.id}">
+    <h2>Férias de ${fmtData(p.inicio)} a ${fmtData(p.fim)} · ${dias} dias</h2>
+    <p class="fp-status ${p.confirmado ? 'pos' : ''}"><strong>${p.confirmado ? '✓ Confirmada: já está na Projeção' : 'Simulação: nada entra na Projeção'}</strong></p>
+    <div class="filtros" style="margin-top:8px">
+      <label>Início<input type="date" id="fpI_${p.id}" value="${p.inicio}" onchange="fpData('${p.id}', 'inicio', this.value)"></label>
+      <label>Fim<input type="date" id="fpF_${p.id}" value="${p.fim}" onchange="fpData('${p.id}', 'fim', this.value)"></label>
+    </div>
+    <h3 class="fp-sub">Meses afetados: salário residual</h3>
+    <div class="filtros">
+      ${comps.map(m => {
+        const d = diasTrabalhados(p, m);
+        return d > 0 ? num(`fpR_${p.id}_${m}`, `${tituloBlocoMes(m)} · ${d} ${d === 1 ? 'dia trabalhado' : 'dias trabalhados'} (R$)`, (p.residuais || {})[m], `fpResidual('${p.id}', '${m}', this.value)`)
+          : `<p class="muted">${tituloBlocoMes(m)}: mês inteiro de férias, sem salário residual.</p>`;
+      }).join('')}
+    </div>
+    <h3 class="fp-sub">Férias e 13º</h3>
+    <div class="filtros">
+      ${num(`fpV_${p.id}`, 'Valor das férias (R$)', p.valorFerias, `fpCampo('${p.id}', 'valorFerias', this.value)`)}
+      <label>Haverá 13º?<select id="fp13_${p.id}" onchange="fp13('${p.id}', this.value)"><option value="nao" ${p.tem13 ? '' : 'selected'}>Não</option><option value="sim" ${p.tem13 ? 'selected' : ''}>Sim</option></select></label>
+      ${p.tem13 ? num(`fpD_${p.id}`, 'Valor do 13º (R$)', p.valor13, `fpCampo('${p.id}', 'valor13', this.value)`) : ''}
+    </div>
+    <h3 class="fp-sub">Gastos extras do período (opcional)</h3>
+    <form class="fields" onsubmit="addExtraFerias(event, '${p.id}')">
+      <label>Nome<input type="text" name="nome" placeholder="Ex.: Taxas" required></label>
+      <label>Valor (R$)<input type="number" step="0.01" min="0" name="valor" required></label>
+      <button>Adicionar</button>
+    </form>
+    ${(p.extras || []).length ? `<div class="fp-extras" style="margin-top:8px">${p.extras.map(x => `<span class="chip">${esc(x.nome)}: ${valorBloco(x.valor)} <button class="small danger" onclick="delExtraFerias('${p.id}', '${x.id}')">×</button></span>`).join('')}</div>` : ''}
+    <h3 class="fp-sub">Receitas normais que as férias substituem</h3>
+    ${unicas.length ? `<div class="fp-subst">${unicas.map(({ x }) => `<label style="grid-auto-flow:column;justify-content:start;align-items:center;gap:8px;margin:4px 0"><input type="checkbox" id="fpS_${p.id}_${x.id}" ${(p.naoSubstitui || []).includes(x.id) ? '' : 'checked'} onchange="fpSubst('${p.id}', '${x.id}', this.checked)"> ${esc(x.descricao)} (${brl(x.valor)})</label>`).join('')}</div>
+      <p class="muted">Nos meses afetados, as receitas marcadas saem da Projeção e entram os valores acima. Desmarque o que você continua recebendo normalmente.</p>` : '<p class="muted">Nenhuma receita prevista nesses meses.</p>'}
+    <h3 class="fp-sub">Resultado</h3>
+    <div class="grid fp-totais">
+      ${card('Gastos dos meses', brl(b.gastos), comps.length > 1 ? 'Meses somados' : 'Gastos do mês', 'neg')}
+      ${card('Receitas informadas', brl(b.totalReceitas), 'Férias, salários residuais e 13º', 'pos')}
+      ${card('Delta', brl(b.delta), 'Receitas menos gastos', b.delta < 0 ? 'neg' : 'pos')}
+    </div>
+    <div class="scroll" style="margin-top:12px">${htmlBlocoGastos(b, b.nomes, false)}</div>
+    <div class="row" style="margin-top:12px">
+      ${p.confirmado ? `<button class="ghost-tema" onclick="fpSimular('${p.id}')">Voltar para simulação</button>`
+        : `<button onclick="fpConfirmar('${p.id}')">Confirmar férias</button>`}
+      <button class="danger" onclick="excluir('feriasPlanos','${p.id}')">Excluir</button>
+    </div>
+    <p class="muted" style="margin-top:8px">Na Projeção, as férias, o 13º e os gastos extras entram no primeiro mês afetado, e cada salário residual entra no próprio mês. Confirmadas, as férias também aparecem na exportação em Excel e em PDF.</p>
+  </section>`;
+}
 
 /* ---------- plano de férias ----------
    O usuário informa cada valor que recebe e quais meses ele fica responsável por quitar. Valores cujos
@@ -2394,7 +2637,16 @@ V.ferias = () => {
       ${b.receitas > 0.005 ? `<p class="muted" style="margin-top:8px">Há ${brl(b.receitas)} de receitas já previstas nesses meses (Recorrentes e Eventuais). Elas não entram nesta conta: se o salário for substituído pelas férias, não some os dois.</p>` : ''}
     </section>`).join('');
   return `
-    <section class="card"><h2>${it ? 'Editar valor' : 'Novo valor das férias'}</h2>
+    <section class="card"><h2>Novo período de férias</h2>
+      <form class="fields" onsubmit="addPeriodoFerias(event)">
+        <label>Início das férias<input type="date" name="inicio" required onchange="fpSugerirFim(this.form)"></label>
+        <label>Fim das férias<input type="date" name="fim" required></label>
+        <button>Ver meses afetados</button>
+      </form>
+      <p class="muted" style="margin-top:10px">Com as datas, o app mostra os meses afetados, os dias trabalhados em cada um e os campos para os valores. Fica como simulação até você confirmar: só então entra na Projeção e na exportação.</p>
+    </section>
+    ${(S.feriasPlanos || []).map(htmlPeriodoFerias).join('')}
+    <section class="card"><h2>${it ? 'Editar valor' : 'Plano livre: novo valor'}</h2>
       <form class="fields" onsubmit="${it ? 'salvarPF' : 'addPF'}(event)">
         <label>Descrição<input type="text" name="descricao" value="${it ? esc(it.descricao) : ''}" placeholder="Ex.: férias + 1/3" required></label>
         <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" value="${it ? it.valor : ''}" required></label>
@@ -3137,7 +3389,7 @@ function importarPlanilhaLegada(todas) {
           cartoes: cartoes.length ? cartoes : S.config.cartoes,
           categorias: categorias.length ? categorias : S.config.categorias
         },
-        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, planoFerias: [], eventuais, lancamentos, ferias
+        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, planoFerias: [], feriasPlanos: [], eventuais, lancamentos, ferias
       };
       commit();
       alert(`Planilha importada: ${recorrentes.length} recorrentes, ${parcelados.length} parcelamento(s), ${eventuais.length} evento(s) e ${lancamentos.length} lançamento(s).`);
@@ -3486,6 +3738,16 @@ function montarPlanilha() {
   (S.planoFerias || []).forEach(x => pf.push([x.descricao, N(x.valor, FMT_VALOR), N(serialMes(x.de), FMT_MES), N(serialMes(x.ate), FMT_MES)]));
   abas.push({ nome: 'Plano_Ferias', linhas: pf });
 
+  // Períodos de férias. As receitas não substituídas vão por nome, porque os ids mudam ao importar.
+  const fps = [['Início', 'Fim', 'Valor das férias', 'Haverá 13º (1 = sim)', 'Valor do 13º', 'Confirmada (1 = sim)', 'Salários residuais', 'Gastos extras', 'Receitas não substituídas']];
+  (S.feriasPlanos || []).forEach(x => {
+    const fora = (x.naoSubstitui || []).map(id => [...S.recorrentes, ...S.eventuais].find(i => i.id === id)).filter(Boolean).map(i => i.descricao);
+    fps.push([N(serialDate(x.inicio), FMT_DATA), N(serialDate(x.fim), FMT_DATA), x.valorFerias != null ? N(x.valorFerias, FMT_VALOR) : null, x.tem13 ? 1 : 0,
+      x.valor13 != null ? N(x.valor13, FMT_VALOR) : null, x.confirmado ? 1 : 0, JSON.stringify(x.residuais || {}),
+      JSON.stringify((x.extras || []).map(e => ({ nome: e.nome, valor: e.valor }))), JSON.stringify(fora)]);
+  });
+  abas.push({ nome: 'Ferias_Periodos', linhas: fps });
+
   // Orçamento por mês (valores editáveis)
   const om = [
     ['Orçamento mensal por categoria (edite os valores)'],
@@ -3546,7 +3808,8 @@ function montarPlanilha() {
     ['Marque 1 na coluna J no mês em que o orçamento paga também o mês seguinte (o mês seguinte fica zerado).'],
     ['Mês', 'Receitas fixas', 'Receitas eventuais', 'Total receitas', 'Despesas fixas', 'Faturas dos cartões', 'Despesas eventuais',
       'Orçamento restante (orçado − já lançado, por categoria)', 'Base de despesas do mês', 'Férias: marque 1', 'Ajuste de férias', 'Despesas totais do mês',
-      'Saldo do mês', 'Saldo acumulado', 'Gasto lançado (Lancamentos + parcelas)', 'Previsto - lançado', 'Gastos à vista (fora do cartão)'],
+      'Saldo do mês', 'Saldo acumulado', 'Gasto lançado (Lancamentos + parcelas)', 'Previsto - lançado', 'Gastos à vista (fora do cartão)',
+      'Férias confirmadas: ajuste da receita', 'Férias confirmadas: gastos extras'],
   ];
   // Avulsos lançados por categoria no mês (vetor alinhado às categorias de Orcamento_Meses), sem os do Simulador.
   const lancCatF = r => `SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$C$2:$C$2000,Orcamento_Meses!$A$4:$A$${ultimaCat},Lancamentos!$A$2:$A$2000,">="&$A${r},Lancamentos!$A$2:$A$2000,"<"&EDATE($A${r},1),Lancamentos!$E$2:$E$2000,"<>Planejada")`;
@@ -3563,12 +3826,12 @@ function montarPlanilha() {
       i === 0 ? F('Config!$B$3', serialMes(x.m), FMT_MES) : F(`EDATE(A${r - 1},1)`, serialMes(x.m), FMT_MES),
       F(sumRecF('Receita').replace(/\{r\}/g, r), x.rf, FMT_VALOR),
       F(sumEvF('Receita').replace(/\{r\}/g, r), x.re, FMT_VALOR),
-      F(`B${r}+C${r}`, x.rt, FMT_VALOR),
+      F(`B${r}+C${r}+R${r}`, x.rt, FMT_VALOR),
       F(sumRecF('Fixo').replace(/\{r\}/g, r), x.ef, FMT_VALOR),
       F(`Faturas!${colL(NCART + 1)}${r}`, x.fat, FMT_VALOR),
       F(sumEvF('Despesa').replace(/\{r\}/g, r), x.ed, FMT_VALOR),
       F(`SUMPRODUCT((${orcMesF(r)}-${lancCatF(r)}>0)*(${orcMesF(r)}-${lancCatF(r)}))`, x.ov, FMT_VALOR),
-      F(`E${r}+F${r}+G${r}+H${r}+Q${r}`, x.I, FMT_VALOR),
+      F(`E${r}+F${r}+G${r}+H${r}+Q${r}+S${r}`, x.I, FMT_VALOR),
       N(x.ferias ? 1 : 0),
       F(adj, x.adj, FMT_VALOR),
       F(`I${r}+K${r}`, x.L, FMT_VALOR),
@@ -3577,6 +3840,8 @@ function montarPlanilha() {
       F(`SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$A$2:$A$2000,">="&$A${r},Lancamentos!$A$2:$A$2000,"<"&EDATE($A${r},1))+SUMIFS(Compras_Parceladas!$G$2:$G$300,Compras_Parceladas!$F$2:$F$300,"<="&EOMONTH($A${r},0),Compras_Parceladas!$H$2:$H$300,">="&$A${r})-SUMIFS(Estornos!$K$2:$K$500,Estornos!$I$2:$I$500,"<="&$A${r},Estornos!$J$2:$J$500,">="&$A${r})`, x.exec, FMT_VALOR),
       F(`IF($A${r}<=TODAY(),L${r}-O${r},0)`, x.dif, FMT_VALOR),
       F(`SUMIFS(Lancamentos!$D$2:$D$2000,Lancamentos!$H$2:$H$2000,"-",Lancamentos!$A$2:$A$2000,">="&$A${r},Lancamentos!$A$2:$A$2000,"<"&EDATE($A${r},1),Lancamentos!$E$2:$E$2000,"<>Planejada")`, x.av, FMT_VALOR),
+      N(x.ferR, FMT_VALOR),
+      N(x.ferD, FMT_VALOR),
     ]);
   });
   abas.push({ nome: 'Projecao_36m', linhas: pr });
@@ -3686,6 +3951,15 @@ function interpretarNova(g) {
     c.itens[key] = { pago: Number(r[3]) === 1, ...(r[4] != null && r[4] !== '' ? { valor: Number(r[4]) } : {}), ...(mov ? { contaId: mov.id } : {}) };
   });
 
+  // Períodos de férias (aba opcional).
+  const lerJSON = (t, padrao) => { try { return JSON.parse(String(t)); } catch (e) { return padrao; } };
+  const feriasPlanos = (g.Ferias_Periodos || []).slice(1).filter(r => r[0] && r[1]).map(r => ({
+    id: uid(), inicio: isoData(r[0]), fim: isoData(r[1]), valorFerias: r[2] != null && r[2] !== '' ? Number(r[2]) : null,
+    tem13: Number(r[3]) === 1, valor13: r[4] != null && r[4] !== '' ? Number(r[4]) : null, confirmado: Number(r[5]) === 1,
+    residuais: lerJSON(r[6], {}), extras: lerJSON(r[7], []).map(e => ({ id: uid(), nome: e.nome, valor: e.valor })),
+    naoSubstitui: [...recorrentes, ...eventuais].filter(i => lerJSON(r[8], []).includes(i.descricao) && i.valor !== undefined).map(i => i.id)
+  }));
+
   // Vencimentos (aba opcional).
   const vencimentosCfg = {};
   (g.Vencimentos || []).slice(1).filter(r => r[0] && r[1]).forEach(r => { vencimentosCfg[String(r[0])] = Number(r[1]); });
@@ -3732,7 +4006,7 @@ function interpretarNova(g) {
       cartoes: cartoes.length ? cartoes : S.config.cartoes,
       categorias: categorias.length ? categorias : S.config.categorias
     },
-    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, planoFerias, eventuais, lancamentos, ferias, patrimonio
+    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, planoFerias, feriasPlanos, eventuais, lancamentos, ferias, patrimonio
   };
 }
 
