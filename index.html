@@ -66,6 +66,13 @@ details summary::-webkit-details-marker{display:none}
 .mes-fatura input[type=month]{width:auto;max-width:190px;padding:3px 6px;font-weight:700;color:#fff;background:rgba(255,255,255,.18);border-color:transparent;color-scheme:dark}
 .mes-fatura button.voltar{font-size:12px;padding:3px 8px;margin-left:4px}
 button.ghost-tema{background:transparent;color:var(--ink);border:1px solid var(--line)}
+/* Prévia da exportação de gastos: mesmo modelo do Excel */
+.exp-grade{display:flex;gap:14px;align-items:flex-start}
+table.exp-bloco{width:auto;min-width:210px;flex:none;border:1px solid var(--line)}
+table.exp-bloco th{background:#a9d08e;color:#1d2330;text-align:center;border:1px solid var(--line);white-space:nowrap}
+table.exp-bloco td{border:1px solid var(--line);white-space:nowrap;padding:3px 6px}
+.exp-ano{font-weight:400;font-size:12px}
+table.exp-bloco tr.exp-vazia td{height:12px;padding:0;border-left:0;border-right:0}
 /* Dica do gráfico da Projeção */
 .dica{position:absolute;top:6px;z-index:1;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5;pointer-events:none;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.25)}
 .dica b{display:block;margin-bottom:2px}
@@ -2197,6 +2204,106 @@ V.calendario = () => {
     </section>`;
 };
 
+/* ---------- exportar gastos (Excel) ----------
+   Um bloco por mês, 36 meses, no modelo "Outubro (Novembro)": gastos em ordem alfabética, com nome e valor
+   total, e no fim Gastos (total), Receita e Delta (receita − gastos), em fórmulas.
+   A soma de cada mês é igual às "Despesas previstas" (mesBase): faturas pelo valor global, contas fixas,
+   despesas eventuais, gastos à vista e o orçamento que ainda falta gastar em cada categoria.
+   Fica uma folha por ano, porque o título do mês não tem o ano. */
+const MESES_LONGOS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+const nomeMesLongo = m => MESES_LONGOS[Number(m.slice(5, 7)) - 1];
+const tituloBlocoMes = m => `${nomeMesLongo(m)} (${nomeMesLongo(addM(m, 1))})`;
+// Gastos de um mês como [tipo, nome, valor], somando o que tem o mesmo nome e tipo.
+function gastosDoMes(m) {
+  const itens = [];
+  const add = (tipo, nome, v) => {
+    if (Math.abs(v) < 0.005) return;
+    const it = itens.find(x => x[0] === tipo && x[1] === nome);
+    if (it) it[2] += v; else itens.push([tipo, nome, v]);
+  };
+  S.config.cartoes.forEach(c => add(0, c, fatCartao(c, m)));
+  S.recorrentes.filter(r => r.grupo === 'Fixo' && ativo(r, m)).forEach(r => add(1, r.descricao, r.valor));
+  S.eventuais.filter(e => e.tipo === 'Despesa' && e.mes === m).forEach(e => add(2, e.descricao, e.valor));
+  S.lancamentos.filter(l => aVista(l) && mkOf(l.data) === m).forEach(l => add(3, l.descricao, l.valor));
+  const o = orcEfetivo(m);
+  S.config.categorias.forEach(c => add(4, c, Math.max(0, (Number(o[c]) || 0) - avulsosCat(c, m))));
+  return itens;
+}
+// Os 36 meses com a mesma lista de gastos, para as linhas ficarem alinhadas entre os blocos. Sem o gasto no mês: zero.
+function gastos36(ini) {
+  const meses = Array.from({ length: 36 }, (_, i) => addM(ini, i));
+  const porMes = meses.map(m => ({ m, itens: gastosDoMes(m) }));
+  const nomes = [...new Set(porMes.flatMap(({ itens }) => itens.map(x => x[1])))]
+    .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+  const c2 = v => Math.round(v * 100) / 100;
+  return { nomes, meses: porMes.map(({ m, itens }) => {
+    const valores = nomes.map(n => c2(itens.filter(x => x[1] === n).reduce((a, x) => a + x[2], 0)));
+    const gastos = c2(valores.reduce((a, v) => a + v, 0)), receita = c2(mesBase(m).rt);
+    return { m, valores, gastos, receita, delta: c2(receita - gastos) };
+  }) };
+}
+const FMT_GASTO = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
+function abasGastos(ini) {
+  const { nomes, meses } = gastos36(ini);
+  const anos = [...new Set(meses.map(x => x.m.slice(0, 4)))];
+  return anos.map(ano => {
+    const doAno = meses.filter(x => x.m.slice(0, 4) === ano);
+    // Título, gastos, uma linha em branco e os três totais. Números de linha do Excel (começam em 1):
+    const fimItens = nomes.length + 1, lGastos = nomes.length + 3, lReceita = lGastos + 1, lDelta = lGastos + 2;
+    const linhas = Array.from({ length: lDelta }, () => []);
+    const larguras = [], mesclas = [];
+    doAno.forEach((x, k) => {
+      const c = k * 3; // nome, valor e uma coluna de separação
+      const col = i => { let s = ''; i += 1; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; };
+      linhas[0][c] = { v: tituloBlocoMes(x.m), tema: 'titulo' };
+      linhas[0][c + 1] = { v: '', tema: 'titulo' };
+      mesclas.push(`${col(c)}1:${col(c + 1)}1`);
+      nomes.forEach((n, i) => {
+        linhas[i + 1][c] = { v: n, tema: 'linha' };
+        linhas[i + 1][c + 1] = { v: x.valores[i], z: FMT_GASTO, tema: 'linha' };
+      });
+      const v = col(c + 1);
+      linhas[lGastos - 1][c] = { v: 'Gastos', tema: 'linha' };
+      linhas[lGastos - 1][c + 1] = { ...F(`SUM(${v}2:${v}${fimItens})`, x.gastos, FMT_GASTO), tema: 'linha' };
+      linhas[lReceita - 1][c] = { v: 'Receita', tema: 'linha' };
+      linhas[lReceita - 1][c + 1] = { v: x.receita, z: FMT_GASTO, tema: 'linha' };
+      linhas[lDelta - 1][c] = { v: 'Delta', tema: 'linha' };
+      linhas[lDelta - 1][c + 1] = { ...F(`${v}${lReceita}-${v}${lGastos}`, x.delta, FMT_GASTO), tema: 'linha' };
+      larguras.push(Math.max(16, ...nomes.map(n => n.length + 2)), 14, 3);
+    });
+    return { nome: ano, linhas, larguras, mesclas };
+  });
+}
+let expIni = null; // primeiro mês da exportação; null = mês anterior ao de hoje, o do check list da vez
+const expMes = () => expIni || addM(mkOf(hoje()), -1);
+function exportarGastos() {
+  XL.baixar(XL.gerar(abasGastos(expMes())), `gastos-36-meses-${expMes()}.xlsx`);
+}
+
+V.exportar = () => {
+  const { nomes, meses } = gastos36(expMes());
+  const blocos = meses.map(x => `<table class="exp-bloco">
+      <thead><tr><th colspan="2">${tituloBlocoMes(x.m)} <span class="exp-ano">${x.m.slice(0, 4)}</span></th></tr></thead>
+      <tbody>${nomes.map((n, i) => `<tr><td>${esc(n)}</td><td class="num">${x.valores[i] ? brl(x.valores[i]) : 'R$ -'}</td></tr>`).join('')}
+        <tr class="exp-vazia"><td colspan="2"></td></tr>
+        <tr><td>Gastos</td><td class="num">${x.gastos ? brl(x.gastos) : 'R$ -'}</td></tr>
+        <tr><td>Receita</td><td class="num">${x.receita ? brl(x.receita) : 'R$ -'}</td></tr>
+        <tr><td>Delta</td><td class="num">${x.delta ? brl(x.delta) : 'R$ -'}</td></tr></tbody>
+    </table>`).join('');
+  return `
+    <section class="card"><h2>Exportar gastos para o Excel</h2>
+      <div class="filtros" style="grid-template-columns:repeat(auto-fit,minmax(170px,240px))">
+        <label>Primeiro mês<input type="month" id="expIni" value="${expMes()}" onchange="if(this.value){expIni=this.value;render()}"></label>
+        <button id="expBaixar" style="height:38px" onclick="exportarGastos()">Exportar 36 meses (.xlsx)</button>
+      </div>
+      <p class="muted" style="margin-top:10px">Um bloco por mês e uma folha por ano, com os gastos em ordem alfabética, pelo nome e o valor total. No fim de cada mês: Gastos (o total), Receita e Delta (receita menos gastos). Faturas aparecem pelo valor global de cada cartão. Sem gasto no mês, o valor aparece como "R$ -".</p>
+      <p class="muted">O total de Gastos é igual às Despesas previstas, por isso o orçamento que ainda falta gastar entra com o nome da categoria. Gastos e Delta são fórmulas: se você mudar um valor no Excel, eles se atualizam.</p>
+    </section>
+    <section class="card"><h2>Prévia dos 36 meses</h2>
+      ${nomes.length ? `<div class="scroll"><div class="exp-grade" id="expPrevia">${blocos}</div></div>` : '<p class="muted">Nenhum gasto nesses 36 meses.</p>'}
+    </section>`;
+};
+
 /* ---------- plano de férias ----------
    O usuário informa cada valor que recebe e quais meses ele fica responsável por quitar. Valores cujos
    meses se sobrepõem formam um bloco: os gastos dos meses são unificados e comparados com a soma dos valores.
@@ -2477,7 +2584,7 @@ function render() {
   $('aviso').innerHTML = avisoBackup() + avisoVencimento() + avisoChecklist();
   $('abas').innerHTML = [
     ['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'],
-    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['ferias', 'Férias'],
+    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['ferias', 'Férias'], ['exportar', 'Exportar gastos'],
     ['eventuais', 'Eventuais'], ['patrimonio', 'Patrimônio'], ['config', 'Configurações']
   ].map(([k, t]) => `<button class="tab ${k === aba ? 'on' : ''}" onclick="ir('${k}')">${t}</button>`).join('');
   // Preserva as posições de rolagem (tabelas largas e barra de abas) entre redesenhos.
@@ -3081,13 +3188,19 @@ const XL = (() => {
     return new Blob([...partes, ...cd, fim], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
 
-  // Gera o .xlsx a partir de abas: [{nome, linhas}], onde célula = valor | {v, f, z}.
+  // Gera o .xlsx a partir de abas: [{nome, linhas, larguras?, mesclas?}], onde célula = valor | {v, f, z, tema?}.
+  // tema: 'titulo' (fundo verde, centralizado, com borda) ou 'linha' (com borda).
   function gerar(abas) {
-    const estilos = [], idxEstilo = new Map();
-    const estiloDe = z => {
-      if (!z) return 0;
-      if (!idxEstilo.has(z)) { estilos.push(z); idxEstilo.set(z, estilos.length); }
-      return idxEstilo.get(z);
+    const formatos = [], estilos = [], idxEstilo = new Map();
+    const estiloDe = (z, tema) => {
+      if (!z && !tema) return 0;
+      const chave = `${z || ''}|${tema || ''}`;
+      if (!idxEstilo.has(chave)) {
+        if (z && !formatos.includes(z)) formatos.push(z);
+        estilos.push({ z, tema });
+        idxEstilo.set(chave, estilos.length);
+      }
+      return idxEstilo.get(chave);
     };
     const planilhas = abas.map(a => {
       let linhas = '';
@@ -3097,7 +3210,7 @@ const XL = (() => {
           if (c === null || c === undefined) return;
           const obj = typeof c === 'object' ? c : { v: c };
           const ref = colNome(k) + (r + 1);
-          const sAttr = (() => { const s = estiloDe(obj.z); return s ? ` s="${s}"` : ''; })();
+          const sAttr = (() => { const s = estiloDe(obj.z, obj.tema); return s ? ` s="${s}"` : ''; })();
           const v = obj.v;
           if (obj.f) {
             const f = `<f>${esc(String(obj.f).replace(/^=/, ''))}</f>`;
@@ -3108,16 +3221,25 @@ const XL = (() => {
             if (isFinite(v)) celulas += `<c r="${ref}"${sAttr}><v>${v}</v></c>`;
           } else if (v !== undefined && v !== null && v !== '') {
             celulas += `<c r="${ref}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
+          } else if (obj.tema) {
+            celulas += `<c r="${ref}"${sAttr}/>`; // célula vazia, mas com borda (ex.: parte de uma mesclagem)
           }
         });
         if (celulas) linhas += `<row r="${r + 1}">${celulas}</row>`;
       });
-      return `${XMLH}<worksheet xmlns="${NS_MAIN}"><sheetData>${linhas}</sheetData></worksheet>`;
+      const cols = a.larguras ? `<cols>${a.larguras.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
+      const mesclas = a.mesclas && a.mesclas.length ? `<mergeCells count="${a.mesclas.length}">${a.mesclas.map(m => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>` : '';
+      return `${XMLH}<worksheet xmlns="${NS_MAIN}">${cols}<sheetData>${linhas}</sheetData>${mesclas}</worksheet>`;
     });
-    const numFmts = estilos.length ? `<numFmts count="${estilos.length}">${estilos.map((z, i) => `<numFmt numFmtId="${164 + i}" formatCode="${esc(z)}"/>`).join('')}</numFmts>` : '';
+    const numFmts = formatos.length ? `<numFmts count="${formatos.length}">${formatos.map((z, i) => `<numFmt numFmtId="${164 + i}" formatCode="${esc(z)}"/>`).join('')}</numFmts>` : '';
     const xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>']
-      .concat(estilos.map((z, i) => `<xf numFmtId="${164 + i}" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>`)).join('');
-    const styles = `${XMLH}<styleSheet xmlns="${NS_MAIN}">${numFmts}<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${estilos.length + 1}">${xfs}</cellXfs></styleSheet>`;
+      .concat(estilos.map(({ z, tema }) => {
+        const num = z ? 164 + formatos.indexOf(z) : 0;
+        const titulo = tema === 'titulo';
+        return `<xf numFmtId="${num}" fontId="0" fillId="${titulo ? 2 : 0}" borderId="${tema ? 1 : 0}" xfId="0"${z ? ' applyNumberFormat="1"' : ''}${titulo ? ' applyFill="1"' : ''}${tema ? ' applyBorder="1"' : ''}${titulo ? ' applyAlignment="1"><alignment horizontal="center"/></xf>' : '/>'}`;
+      })).join('');
+    const lado = n => `<${n} style="thin"><color auto="1"/></${n}>`;
+    const styles = `${XMLH}<styleSheet xmlns="${NS_MAIN}">${numFmts}<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFA9D08E"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>${lado('left')}${lado('right')}${lado('top')}${lado('bottom')}<diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${estilos.length + 1}">${xfs}</cellXfs></styleSheet>`;
     const workbook = `${XMLH}<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_REL}"><sheets>${abas.map((a, i) => `<sheet name="${esc(a.nome)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>`;
     const rels = `${XMLH}<Relationships xmlns="${NS_PKG}">${abas.map((a, i) => `<Relationship Id="rId${i + 1}" Type="${NS_REL}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${abas.length + 1}" Type="${NS_REL}/styles" Target="styles.xml"/></Relationships>`;
     const ct = `${XMLH}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${abas.map((a, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
