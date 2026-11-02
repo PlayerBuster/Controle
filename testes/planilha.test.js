@@ -175,6 +175,55 @@ test('exportar gastos: blocos no modelo da foto, 36 meses, ordem alfabética, e 
   }
 });
 
+test('férias confirmadas: fórmulas da planilha e bloco FÉRIAS batem no LibreOffice, e a importação mantém tudo', { timeout: 240000 }, async () => {
+  const plano = { id: 'fp', inicio: '2026-11-23', fim: '2026-12-22', valorFerias: 4370.18, residuais: { '2026-11': 2000, '2026-12': 700 }, tem13: true, valor13: 3100,
+    extras: [{ id: 'x', nome: 'Taxas', valor: 900 }], naoSubstitui: ['alug'], confirmado: true };
+  await definirDados(pg, { ...DADOS, feriasPlanos: [plano],
+    recorrentes: [...DADOS.recorrentes, { id: 'alug', descricao: 'Aluguel recebido', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 300, inicio: '2026-01-01', fim: '' }] });
+  const recalcula = async (b64, nome) => {
+    const origem = path.join(dir, `${nome}.xlsx`), saida = path.join(dir, `${nome}-lo`);
+    fs.writeFileSync(origem, Buffer.from(b64, 'base64'));
+    spawnSync(soffice(), [`-env:UserInstallation=${perfilLibreOffice()}`, '--headless', '--convert-to', 'xlsx', '--outdir', saida, origem], { encoding: 'utf8', timeout: 100000 });
+    return ler(fs.readFileSync(path.join(saida, `${nome}.xlsx`)).toString('base64'));
+  };
+  // Planilha principal: todas as fórmulas.
+  const { b64, formulas } = await gerar();
+  const lo = await recalcula(b64, 'ferias');
+  const dif = formulas.filter(c => !iguais(c.v, ((lo[c.aba] || [])[c.r] || [])[c.k]));
+  assert.equal(dif.length, 0, dif.slice(0, 8).map(c => `${c.aba} l${c.r + 1} c${c.k}: ${JSON.stringify(c.v)} x ${JSON.stringify(lo[c.aba][c.r][c.k])}`).join('\n'));
+  // Exportação de gastos: bloco FÉRIAS logo depois do 1º mês afetado.
+  const g64 = await pg.evaluate(async () => {
+    const g = XL.gerar(abasGastos('2026-11'));
+    const u = new Uint8Array(await g.arrayBuffer());
+    let s = ''; for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+    return btoa(s);
+  });
+  const gl = await recalcula(g64, 'gastos-ferias');
+  const f = gl['2026'];
+  assert.deepEqual(f[0].filter(Boolean), ['Novembro (Dezembro)', 'FÉRIAS (DEZEMBRO - JANEIRO)', 'Dezembro (Janeiro)']);
+  const achar = nome => f.findIndex(l => l && l[3] === nome);
+  const lG = achar('Gastos'), esperado = await avaliar(pg, `blocoFerias(S.feriasPlanos[0])`);
+  assert.ok(Math.abs(f[lG][4] - esperado.gastos) < 0.01, `Gastos ${f[lG][4]} x ${esperado.gastos}`);
+  assert.equal(f[achar('Taxas')][4], 900);
+  assert.equal(f[achar('RECEITA FÉRIAS')][4], 4370.18);
+  assert.equal(f[achar('RECEITA NOVEMBRO (DEZEMBRO) 22 dias')][4], 2000);
+  assert.equal(f[achar('RECEITA DEZEMBRO (JANEIRO) 9 dias')][4], 700);
+  assert.equal(f[achar('RECEITA DÉCIMO TERCEIRO')][4], 3100);
+  assert.ok(Math.abs(f[achar('DELTA')][4] - (10170.18 - esperado.gastos)) < 0.01, 'DELTA recalculado');
+  // Blocos dos meses alinhados e com a receita normal (salário 7.000 + aluguel 300).
+  assert.equal(f[lG][0], 'Gastos');
+  assert.equal(f[lG + 1][0], 'Receita');
+  assert.equal(f[lG + 1][1], 7300);
+  // Exportar e importar mantém o período.
+  const n = await pg.evaluate(gg => {
+    const x = interpretarNova(gg), p = x.feriasPlanos[0];
+    return { ...p, id: 0, extras: p.extras.map(e => [e.nome, e.valor]), fora: p.naoSubstitui.map(i => x.recorrentes.find(r => r.id === i).descricao), naoSubstitui: 0 };
+  }, await ler(b64));
+  assert.deepEqual(n, { id: 0, inicio: '2026-11-23', fim: '2026-12-22', valorFerias: 4370.18, tem13: true, valor13: 3100, confirmado: true,
+    residuais: { '2026-11': 2000, '2026-12': 700 }, extras: [['Taxas', 900]], fora: ['Aluguel recebido'], naoSubstitui: 0 });
+  await definirDados(pg, DADOS);
+});
+
 test('exportar e importar a planilha devolve os mesmos dados', async () => {
   const { b64 } = await gerar();
   const g = await ler(b64);

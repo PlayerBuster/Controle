@@ -1169,6 +1169,128 @@ test('Exportar gastos: faturas, fixos, eventuais, à vista e orçamento em ordem
   assert.deepEqual(pg.erros, []);
 });
 
+/* ---------- período de férias ---------- */
+// Caso da imagem do usuário: férias de 23/11 a 22/12, 22 dias trabalhados em novembro e 9 em dezembro.
+// Gastos: nov 100 + 409,83 = 509,83; dez 100 + 285,83 = 385,83; taxas 900 → 1.795,66.
+const dadosFP = { config: { cartoes: ['Nubank'], primeiroMes: '2026-11' },
+  recorrentes: [
+    { id: 's', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Outros', valor: 2800, inicio: '2020-01-01', fim: '' },
+    { id: 'i', descricao: 'Internet', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 100, inicio: '2020-01-01', fim: '' }],
+  parcelados: [
+    { id: 'a', dataCompra: '2026-11-01', cartao: 'Nubank', descricao: 'A', categoria: 'Outros', valorTotal: 409.83, parcelas: 1, inicio: '2026-11' },
+    { id: 'b', dataCompra: '2026-12-01', cartao: 'Nubank', descricao: 'B', categoria: 'Outros', valorTotal: 285.83, parcelas: 1, inicio: '2026-12' }] };
+const planoFP = { id: 'fp', inicio: '2026-11-23', fim: '2026-12-22', valorFerias: 4370.18, residuais: { '2026-11': 2000, '2026-12': 700 }, tem13: true, valor13: 3100,
+  extras: [{ id: 'x', nome: 'Taxas', valor: 900 }], naoSubstitui: [], confirmado: false };
+const fpC2 = expr => `Math.round((${expr}) * 100) / 100`;
+
+test('Férias: pelas datas, mostra os meses afetados e os dias trabalhados em cada um', async () => {
+  await definirDados(pg, dadosFP);
+  await pg.evaluate(() => ir('ferias'));
+  const f = 'form[onsubmit="addPeriodoFerias(event)"]';
+  await pg.fill(`${f} [name=inicio]`, '2026-11-23');
+  await pg.dispatchEvent(`${f} [name=inicio]`, 'change');
+  // Sugere 30 dias.
+  assert.equal(await pg.inputValue(`${f} [name=fim]`), '2026-12-22');
+  await pg.click(`${f} button`);
+  const id = await avaliar(pg, `S.feriasPlanos[0].id`);
+  const txt = await pg.innerText('.fp-plano');
+  assert.match(txt, /Novembro \(Dezembro\) · 22 dias trabalhados/);
+  assert.match(txt, /Dezembro \(Janeiro\) · 9 dias trabalhados/);
+  assert.match(txt, /Simulação: nada entra na Projeção/);
+  assert.ok(await pg.$(`#fpR_${id}_2026-11`));
+  assert.ok(await pg.$(`#fpR_${id}_2026-12`));
+  // Outros formatos de período.
+  const dias = (i, fm, m) => avaliar(pg, `diasTrabalhados({ inicio: '${i}', fim: '${fm}' }, '${m}')`);
+  assert.equal(await dias('2026-12-01', '2026-12-30', '2026-12'), 1);
+  assert.equal(await dias('2026-11-20', '2027-01-10', '2026-11'), 19);
+  assert.equal(await dias('2026-11-20', '2027-01-10', '2026-12'), 0);
+  assert.equal(await dias('2026-11-20', '2027-01-10', '2027-01'), 21);
+  assert.deepEqual(await avaliar(pg, `competenciasFerias({ inicio: '2026-11-20', fim: '2027-01-10' })`), ['2026-11', '2026-12', '2027-01']);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Férias: simulação não mexe na Projeção; confirmada, entra; voltar para simulação desfaz', async () => {
+  await definirDados(pg, dadosFP);
+  const antes = await avaliar(pg, `['2026-11', '2026-12', '2027-01'].map(m => [mesBase(m).rt, ${fpC2('mesBase(m).I')}])`);
+  assert.deepEqual(antes, [[2800, 509.83], [2800, 385.83], [2800, 100]]);
+  await pg.evaluate(p => { S.feriasPlanos = [JSON.parse(p)]; ir('ferias'); }, JSON.stringify(planoFP));
+  assert.deepEqual(await avaliar(pg, `['2026-11', '2026-12', '2027-01'].map(m => [mesBase(m).rt, ${fpC2('mesBase(m).I')}])`), antes);
+  assert.equal(await avaliar(pg, `gastos36('2026-10').meses.length + sequenciaGastos('2026-10').blocos.length`), 72, 'simulação não aparece na exportação');
+  await pg.click('.fp-plano button:has-text("Confirmar férias")');
+  // Nov: −2.800 + 2.000 + 4.370,18 + 3.100 → 9.470,18, com as taxas nos gastos. Dez: 700. Jan: normal.
+  assert.deepEqual(await avaliar(pg, `['2026-11', '2026-12', '2027-01'].map(m => [${fpC2('mesBase(m).rt')}, ${fpC2('mesBase(m).I')}])`),
+    [[9470.18, 1409.83], [700, 385.83], [2800, 100]]);
+  // Projeção usa os mesmos valores: novembro e dezembro somam 10.170,18 de receita e 1.795,66 de gastos.
+  assert.deepEqual(await avaliar(pg, `(r => [${fpC2('r[0].rt + r[1].rt')}, ${fpC2('r[0].L + r[1].L')}])(projecao(3))`), [10170.18, 1795.66]);
+  assert.match(await pg.innerText('.fp-plano'), /Confirmada: já está na Projeção/);
+  await pg.click('.fp-plano button:has-text("Voltar para simulação")');
+  assert.deepEqual(await avaliar(pg, `['2026-11', '2026-12', '2027-01'].map(m => [mesBase(m).rt, ${fpC2('mesBase(m).I')}])`), antes);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Férias: só confirma com os valores, e receita desmarcada continua', async () => {
+  await definirDados(pg, { ...dadosFP, eventuais: [{ id: 'bonus', mes: '2026-12', descricao: 'Bônus', tipo: 'Receita', valor: 500 }] });
+  await pg.evaluate(p => { S.feriasPlanos = [{ ...JSON.parse(p), valorFerias: null, residuais: { '2026-11': 2000 } }]; ir('ferias'); }, JSON.stringify(planoFP));
+  await pg.click('.fp-plano button:has-text("Confirmar férias")');
+  const msg = pg.alertas[pg.alertas.length - 1];
+  assert.match(msg, /o valor das férias/);
+  assert.match(msg, /o salário residual de dez\/2026/);
+  assert.equal(await avaliar(pg, `S.feriasPlanos[0].confirmado`), false);
+  await pg.fill('#fpV_fp', '4000');
+  await pg.dispatchEvent('#fpV_fp', 'change');
+  await pg.fill('#fpR_fp_2026-12', '700');
+  await pg.dispatchEvent('#fpR_fp_2026-12', 'change');
+  // Bônus de dezembro: por padrão é substituído; desmarcado, continua somando.
+  await pg.uncheck('#fpS_fp_bonus');
+  await pg.click('.fp-plano button:has-text("Confirmar férias")');
+  assert.equal(await avaliar(pg, `S.feriasPlanos[0].confirmado`), true);
+  // Dez: −2.800 + 700 + 500 do bônus somados às receitas normais (2.800 + 500) → 1.200.
+  assert.equal(await avaliar(pg, `mesBase('2026-12').rt`), 1200);
+  // Outras férias nos mesmos meses não podem ser confirmadas juntas.
+  await pg.evaluate(() => { S.feriasPlanos.push({ id: 'fp2', inicio: '2026-12-10', fim: '2026-12-20', valorFerias: 1, residuais: { '2026-12': 1 }, extras: [], naoSubstitui: [], confirmado: false }); render(); });
+  await pg.click('.fp-plano[data-id="fp2"] button:has-text("Confirmar férias")');
+  assert.match(pg.alertas[pg.alertas.length - 1], /usam um mês das férias confirmadas/);
+  assert.equal(await avaliar(pg, `S.feriasPlanos[1].confirmado`), false);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('Férias confirmadas: bloco consolidado como na imagem, entre os meses, com as receitas separadas', async () => {
+  await definirDados(pg, dadosFP);
+  await pg.evaluate(p => { S.feriasPlanos = [{ ...JSON.parse(p), confirmado: true }]; expIni = '2026-11'; ir('exportar'); }, JSON.stringify(planoFP));
+  const seq = await avaliar(pg, `sequenciaGastos('2026-11')`);
+  assert.deepEqual(seq.blocos.slice(0, 3).map(x => x.titulo), ['Novembro (Dezembro)', 'FÉRIAS (DEZEMBRO - JANEIRO)', 'Dezembro (Janeiro)']);
+  assert.equal(seq.blocos.length, 37);
+  const fb = seq.blocos[1];
+  assert.deepEqual(seq.nomes, ['Internet', 'Nubank']);
+  assert.deepEqual(fb.valores, [200, 695.66]);
+  assert.deepEqual(fb.extras, [{ nome: 'Taxas', valor: 900 }]);
+  assert.equal(fb.gastos, 1795.66);
+  assert.deepEqual(fb.receitas, [
+    { nome: 'RECEITA FÉRIAS', valor: 4370.18 },
+    { nome: 'RECEITA NOVEMBRO (DEZEMBRO) 22 dias', valor: 2000 },
+    { nome: 'RECEITA DEZEMBRO (JANEIRO) 9 dias', valor: 700 },
+    { nome: 'RECEITA DÉCIMO TERCEIRO', valor: 3100 }]);
+  assert.equal(fb.totalReceitas, 10170.18);
+  assert.equal(fb.delta, 8374.52);
+  // Os blocos dos meses ficam com a receita normal, como na imagem.
+  assert.deepEqual([seq.blocos[0].receita, seq.blocos[0].gastos, seq.blocos[2].receita], [2800, 509.83, 2800]);
+  // Sem 13º, a linha some. Um mês só: título com um mês.
+  assert.equal(await avaliar(pg, `blocoFerias({ inicio: '2026-12-01', fim: '2026-12-30', valorFerias: 1, residuais: {}, tem13: false }).titulo`), 'FÉRIAS (JANEIRO)');
+  assert.ok(!(await avaliar(pg, `blocoFerias({ inicio: '2026-12-01', fim: '2026-12-30', valorFerias: 1, residuais: {}, tem13: false }).receitas.map(r => r.nome).join()`)).includes('DÉCIMO'));
+  assert.match(await pg.innerText('.exp-ferias'), /FÉRIAS \(DEZEMBRO - JANEIRO\)/);
+  // PDF: abre a impressão só com os blocos; depois de imprimir, volta ao normal.
+  await pg.evaluate(() => { window._print = window.print; window.print = () => { window._impresso = document.getElementById('impressao').innerText; window._classe = document.body.className; }; });
+  await pg.click('#expPDF');
+  const imp = await avaliar(pg, `[window._impresso, window._classe]`);
+  assert.equal(imp[1], 'imprimindo');
+  assert.match(imp[0], /FÉRIAS \(DEZEMBRO - JANEIRO\)/);
+  assert.match(imp[0], /RECEITA NOVEMBRO \(DEZEMBRO\) 22 dias/);
+  assert.match(imp[0], /RECEITA DÉCIMO TERCEIRO/);
+  await pg.evaluate(() => { window.dispatchEvent(new Event('afterprint')); window.print = window._print; expIni = null; });
+  assert.equal(await avaliar(pg, `document.body.className`), '');
+  assert.deepEqual(pg.erros, []);
+});
+
 /* ---------- Projeção: período e gráfico ---------- */
 test('Projeção: período de 6, 12, 24 e 36 meses muda gráfico, comparativo e detalhe', async () => {
   const m = await avaliar(pg, `mkOf(hoje())`);
