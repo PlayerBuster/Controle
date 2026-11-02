@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { abrirApp, fecharNavegador, definirDados, avaliar } = require('./lib');
 
 const ABAS = ['resumo', 'mesatual', 'projecao', 'simulador', 'orcamento', 'lancamentos', 'conta', 'recorrentes', 'parcelas',
-  'faturas', 'checklist', 'calendario', 'ferias', 'eventuais', 'patrimonio', 'config'];
+  'faturas', 'checklist', 'calendario', 'ferias', 'exportar', 'eventuais', 'patrimonio', 'config'];
 
 let pg;
 before(async () => { pg = await abrirApp(); });
@@ -1119,6 +1119,53 @@ test('Vencimentos: a fatura de um mês vence no seguinte, com aviso 3 dias antes
   assert.deepEqual(await avaliar(pg, `S.config.vencimentos`), { Roxinho: 10 });
   await pg.click('#listaVenc button');
   assert.deepEqual(await avaliar(pg, `S.config.vencimentos`), {});
+  assert.deepEqual(pg.erros, []);
+});
+
+/* ---------- exportar gastos ---------- */
+test('Exportar gastos: faturas, fixos, eventuais, à vista e orçamento em ordem alfabética, com Gastos, Receita e Delta', async () => {
+  const m = '2026-10', prox = '2026-11';
+  await definirDados(pg, { config: { cartoes: ['Nubank', 'MP', 'Sem uso'], primeiroMes: '2026-11', categorias: ['Lazer', 'Moradia'] },
+    orcamento: { Lazer: 300 },
+    recorrentes: [
+      { id: 'f', descricao: 'Internet', grupo: 'Fixo', cartao: '', categoria: 'Moradia', valor: 100, inicio: '2020-01-01', fim: '' },
+      { id: 's', descricao: 'Salário', grupo: 'Receita', cartao: '', categoria: 'Moradia', valor: 3000, inicio: '2020-01-01', fim: '' }],
+    parcelados: [{ id: 'p', dataCompra: m + '-01', cartao: 'MP', descricao: 'TV', categoria: 'Moradia', valorTotal: 1073.78, parcelas: 1, inicio: m }],
+    eventuais: [{ id: 'v', mes: m, descricao: 'Unimed', tipo: 'Despesa', valor: 100 }, { id: 'r', mes: m, descricao: 'Bônus', tipo: 'Receita', valor: 500 }],
+    lancamentos: [
+      { id: 'a', data: m + '-05', descricao: 'Lanche', categoria: 'Lazer', forma: 'Cartão', cartao: 'Nubank', valor: 40 },
+      { id: 'b', data: m + '-06', descricao: 'Moto', categoria: 'Lazer', forma: 'Pix', cartao: '', valor: 60 }] });
+  // Out: Nubank 40, MP 1.073,78, Internet 100, Unimed 100, Moto 60, Lazer 300 − 100 = 200.
+  assert.deepEqual(await avaliar(pg, `gastosDoMes('${m}').map(x => [x[1], Math.round(x[2] * 100) / 100])`),
+    [['Nubank', 40], ['MP', 1073.78], ['Internet', 100], ['Unimed', 100], ['Moto', 60], ['Lazer', 200]]);
+  assert.equal(await avaliar(pg, `Math.round(gastosDoMes('${m}').reduce((a, x) => a + x[2], 0) * 100) / 100`), await avaliar(pg, `Math.round(mesBase('${m}').I * 100) / 100`));
+  // Mesma lista em todos os meses, em ordem alfabética (sem diferenciar maiúsculas: Moto antes de MP).
+  // Sem gasto no mês, zero. "Sem uso" e as receitas não aparecem como itens.
+  const g = await avaliar(pg, `gastos36('${m}')`);
+  assert.deepEqual(g.nomes, ['Internet', 'Lazer', 'Moto', 'MP', 'Nubank', 'Unimed']);
+  assert.equal(g.meses.length, 36);
+  assert.deepEqual(g.meses[0].valores, [100, 200, 60, 1073.78, 40, 100]);
+  assert.deepEqual(g.meses[1].valores, [100, 300, 0, 0, 0, 0]);
+  // Out: gastos 1.573,78; receita 3.000 + 500 = 3.500; delta 1.926,22. Nov: gastos 400; receita 3.000; delta 2.600.
+  assert.deepEqual([g.meses[0].gastos, g.meses[0].receita, g.meses[0].delta], [1573.78, 3500, 1926.22]);
+  assert.deepEqual([g.meses[1].gastos, g.meses[1].receita, g.meses[1].delta], [400, 3000, 2600]);
+  assert.equal(g.meses[0].m, m); assert.equal(g.meses[1].m, prox); assert.equal(g.meses[35].m, '2029-09');
+  assert.deepEqual(await avaliar(pg, `[tituloBlocoMes('2026-10'), tituloBlocoMes('2026-12')]`), ['Outubro (Novembro)', 'Dezembro (Janeiro)']);
+  // Tela: prévia e botão de baixar.
+  await pg.evaluate(mm => { expIni = mm; ir('exportar'); }, m);
+  assert.equal((await pg.$$('#expPrevia .exp-bloco')).length, 36);
+  const txt = await pg.innerText('#expPrevia .exp-bloco >> nth=1');
+  assert.match(txt, /Novembro \(Dezembro\)/);
+  assert.match(txt, /Moto\s*R\$ -/);
+  assert.match(txt, /Gastos\s*R\$\s*400,00\s*Receita\s*R\$\s*3\.000,00\s*Delta\s*R\$\s*2\.600,00/);
+  assert.doesNotMatch(await pg.innerText('#expPrevia'), /Salário|Bônus|Sem uso/);
+  const [down] = await Promise.all([pg.waitForEvent('download'), pg.click('#expBaixar')]);
+  assert.equal(down.suggestedFilename(), `gastos-36-meses-${m}.xlsx`);
+  // Trocar o primeiro mês muda os blocos.
+  await pg.fill('#expIni', '2027-01');
+  await pg.dispatchEvent('#expIni', 'change');
+  assert.match(await pg.innerText('#expPrevia .exp-bloco >> nth=0'), /Janeiro \(Fevereiro\)/);
+  await pg.evaluate(() => { expIni = null; });
   assert.deepEqual(pg.erros, []);
 });
 

@@ -124,6 +124,57 @@ test('fórmulas da planilha: valores do LibreOffice iguais aos do app', { timeou
   assert.equal(divergencias.length, 0, 'divergências:\n' + exemplo.join('\n'));
 });
 
+test('exportar gastos: blocos no modelo da foto, 36 meses, ordem alfabética, e Gastos, Receita e Delta batem com o app', { timeout: 180000 }, async () => {
+  const b64 = await pg.evaluate(async () => {
+    const g = XL.gerar(abasGastos('2026-10'));
+    const u = new Uint8Array(await g.arrayBuffer());
+    let s = ''; for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+    return btoa(s);
+  });
+  const arq = path.join(dir, 'gastos.xlsx');
+  fs.writeFileSync(arq, Buffer.from(b64, 'base64'));
+  const saida = path.join(dir, 'gastos-lo');
+  // O LibreOffice precisa conseguir abrir e regravar o arquivo com os estilos novos.
+  spawnSync(soffice(), [`-env:UserInstallation=${perfilLibreOffice()}`, '--headless', '--convert-to', 'xlsx', '--outdir', saida, arq], { encoding: 'utf8', timeout: 150000 });
+  assert.ok(fs.existsSync(path.join(saida, 'gastos.xlsx')), 'LibreOffice não abriu a planilha de gastos');
+  for (const g of [await ler(b64), await ler(fs.readFileSync(path.join(saida, 'gastos.xlsx')).toString('base64'))]) {
+    // Out/2026 a set/2029: uma folha por ano, 36 blocos ao todo.
+    assert.deepEqual(Object.keys(g), ['2026', '2027', '2028', '2029']);
+    const blocos = Object.values(g).reduce((a, f) => a + f[0].filter(Boolean).length, 0);
+    assert.equal(blocos, 36);
+    assert.deepEqual(g['2026'][0].filter(Boolean), ['Outubro (Novembro)', 'Novembro (Dezembro)', 'Dezembro (Janeiro)']);
+    assert.equal(g['2029'][0].filter(Boolean).pop(), 'Setembro (Outubro)');
+    // As receitas só aparecem no total de cada mês, não como itens.
+    const textos = Object.values(g).flat(2).filter(x => typeof x === 'string');
+    for (const fora of ['Salário', 'Total', '13º']) assert.ok(!textos.includes(fora), `não deveria ter ${fora}`);
+    // Em cada mês: Gastos = Despesas previstas (mesBase), Receita e Delta = receita − gastos. No arquivo do
+    // LibreOffice, Gastos e Delta são as fórmulas recalculadas, não os valores gravados pelo app.
+    const esperado = await avaliar(pg, `Array.from({ length: 36 }, (_, i) => { const m = addM('2026-10', i), b = mesBase(m); return [m, b.I, b.rt]; })`);
+    let i = 0;
+    for (const f of Object.values(g)) {
+      const lG = f.findIndex(l => l && l[0] === 'Gastos');
+      assert.ok(lG > 1, 'linha Gastos');
+      assert.deepEqual([f[lG + 1][0], f[lG + 2][0]], ['Receita', 'Delta']);
+      assert.ok(!f[lG - 1] || !f[lG - 1][0], 'linha em branco antes dos totais');
+      // Itens em ordem alfabética.
+      const nomes = f.slice(1, lG - 1).map(l => l[0]);
+      assert.deepEqual(nomes, [...nomes].sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })));
+      for (let k = 0; k * 3 < f[0].length && f[0][k * 3]; k++, i++) {
+        const col = k * 3 + 1, [m, despesas, receita] = esperado[i];
+        const soma = f.slice(1, lG - 1).reduce((a, l) => a + (Number(l[col]) || 0), 0);
+        const perto = (a, b, o) => assert.ok(Math.abs(a - b) < 0.03, `${m} ${o}: ${a} x ${b}`);
+        perto(soma, despesas, 'soma dos itens');
+        perto(Number(f[lG][col]), soma, 'Gastos');
+        perto(Number(f[lG + 1][col]), receita, 'Receita');
+        perto(Number(f[lG + 2][col]), receita - soma, 'Delta');
+      }
+    }
+    // Mês com nomes na mesma linha em todos os blocos.
+    const f27 = g['2027'];
+    assert.equal(f27[1][0], f27[1][3]);
+  }
+});
+
 test('exportar e importar a planilha devolve os mesmos dados', async () => {
   const { b64 } = await gerar();
   const g = await ler(b64);
