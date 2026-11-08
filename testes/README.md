@@ -10,7 +10,7 @@ Para rodar só um arquivo, use `node --test --test-reporter=spec testes/calculos
 
 ## Requisitos
 - Node 18 ou mais novo.
-- Playwright com Chromium, instalado na pasta do projeto: `npm install --no-save playwright` e depois `npx playwright install chromium`.
+- Playwright com Chromium, instalado na pasta do projeto: `npm install --no-save playwright pdfjs-dist@3.11.174 tesseract.js@5.1.1 tesseract.js-core@5.1.1 @tesseract.js-data/por@1.0.0 xlsx@0.18.5` (os leitores de PDF, imagem e .xls que o app baixa da internet; no teste eles vêm destas cópias). Instale tudo num comando só: o npm remove o que não estiver na lista e depois `npx playwright install chromium`.
 - LibreOffice (`soffice`). Se ele não estiver no lugar padrão, indique o caminho na variável `SOFFICE`.
 
 ## O que é testado
@@ -25,6 +25,7 @@ O arquivo testado é escolhido nesta ordem: o caminho em `CF_APP`, se houver; de
 | `telas.test.js` | Todas as abas abrem sem erro, no computador e no celular (375px, sem rolagem lateral). Testa os formulários de Lançamentos, Recorrentes e Parcelamentos: campo Fatura, edição, "Alterar a partir de" e "Fixar estas opções". Testa também a lista de meses e o modo individual da aba Faturas. |
 | `sw.test.js` | Service worker do app instalado. Um servidor local imita o GitHub Pages, inclusive o cache de 10 minutos. O teste confere que uma versão publicada aparece na abertura seguinte e que o app abre sem internet. Com `CF_SW`, dá para testar outro `sw.js`. |
 | `sync.test.js` | Sincronização com dois aparelhos e um Drive falso em memória: arquivo cifrado, todos os tipos de dado chegam ao outro aparelho, alterações diferentes são combinadas, conflito pergunta e senha errada não altera nada. O login no Google e o Drive real não são testados. |
+| `fatura.test.js` | Importar fatura com faturas fictícias: PDF em duas colunas (gerado no próprio teste), PDF com senha (gerado pelo LibreOffice), PDF escaneado e print de app (reconhecimento de texto), CSV do Nubank, C6 e Inter, OFX, Excel .xlsx e .xls, vários arquivos juntos e texto colado. Confere vencimento, total, parcelas, créditos, pagamento ignorado, o que já está no app vir desmarcado e a fatura do app ficar igual ao total do PDF. |
 | `lib.js` | Base comum: abre o app, troca os dados (`definirDados`), avalia expressões na página e prepara o LibreOffice. |
 
 ## Detalhes

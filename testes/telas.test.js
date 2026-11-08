@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { abrirApp, fecharNavegador, definirDados, avaliar } = require('./lib');
 
 const ABAS = ['resumo', 'mesatual', 'projecao', 'simulador', 'orcamento', 'lancamentos', 'conta', 'recorrentes', 'parcelas',
-  'faturas', 'checklist', 'calendario', 'ferias', 'exportar', 'eventuais', 'patrimonio', 'config'];
+  'faturas', 'importar', 'checklist', 'calendario', 'ferias', 'exportar', 'eventuais', 'patrimonio', 'config'];
 
 let pg;
 before(async () => { pg = await abrirApp(); });
