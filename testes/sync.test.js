@@ -115,3 +115,89 @@ test('sincronização: senha errada não apaga nem altera os dados do aparelho',
   assert.equal(drive.conteudo, antes);
   await a.fechar(); await b.fechar();
 });
+
+/* ---------- continuar conectado ---------- */
+// Configura a sincronização como o usuário faz (Client ID salvo, senha e acesso do Google guardados).
+const configurar = (pg, exp) => pg.evaluate(e => {
+  syncCfg.clientId = 'teste'; lsSet(SYNC_KEY, syncCfg);
+  ssSet('cf-token', 't'); ssSet('cf-exp', String(e)); ssSet('cf-senha', 'senha-de-teste');
+}, exp);
+
+test('reabrir o app continua conectado e sincroniza sozinho (senha e acesso não se perdem ao fechar)', { timeout: 60000 }, async () => {
+  const drive = driveFalso();
+  const a = await abrirApp();
+  await drive.ligar(a);
+  await definirDados(a, DADOS);
+  await configurar(a, Date.now() + 3600000);
+  await a.reload();
+  await a.waitForFunction(() => /^Sincronizado/.test(syncEstado), null, { timeout: 20000 });
+  assert.equal(drive.escritas, 1);
+  // Versão antiga guardava só na sessão: a senha é trazida para o aparelho.
+  await a.evaluate(() => { localStorage.removeItem('cf-senha'); sessionStorage.setItem('cf-senha', 'antiga'); });
+  assert.equal(await avaliar(a, `ssGet('cf-senha')`), 'antiga');
+  assert.equal(await avaliar(a, `localStorage.getItem('cf-senha')`), 'antiga');
+  // Desconectar apaga tudo.
+  await a.evaluate(() => desconectarDrive());
+  assert.deepEqual(await avaliar(a, `['cf-senha', 'cf-token', 'cf-exp'].map(k => localStorage.getItem(k) || sessionStorage.getItem(k))`), [null, null, null]);
+  assert.deepEqual(a.erros, []);
+  await a.fechar();
+});
+
+test('acesso do Google vencido: renova sozinho sem pedir nada; se o Google pedir confirmação, mostra Reconectar', { timeout: 60000 }, async () => {
+  const drive = driveFalso();
+  const a = await abrirApp();
+  const inicio = a.url().split('#')[0];
+  await drive.ligar(a);
+  const idas = [];
+  await a.route('https://accounts.google.com/**', r => { idas.push(r.request().url()); r.fulfill({ status: 200, contentType: 'text/html', body: 'Google' }); });
+  await definirDados(a, DADOS);
+  await configurar(a, Date.now() - 1000);
+  await a.reload();
+  await a.waitForFunction(() => location.href.startsWith('https://accounts.google.com'), null, { timeout: 10000 });
+  const u = new URL(idas[0]);
+  assert.equal(u.searchParams.get('prompt'), 'none');
+  assert.equal(u.searchParams.get('client_id'), 'teste');
+  assert.equal(u.searchParams.get('scope'), 'https://www.googleapis.com/auth/drive.appdata');
+  // O Google devolve um acesso novo: o app guarda e sincroniza.
+  await a.goto(inicio + '#access_token=novo&expires_in=3600');
+  await a.waitForFunction(() => /^Sincronizado/.test(syncEstado), null, { timeout: 20000 });
+  assert.equal(await avaliar(a, `ssGet('cf-token')`), 'novo');
+  assert.equal(await avaliar(a, `location.hash`), '');
+  // Venceu de novo e o Google pediu confirmação: não fica indo e voltando; mostra o aviso com Reconectar.
+  await a.evaluate(() => { ssSet('cf-exp', String(Date.now() - 1000)); lsSet('cf-renovacao', 0); });
+  await a.goto('about:blank'); // o Google volta com a página carregando de novo
+  await a.goto(inicio + '#error=interaction_required');
+  await a.waitForTimeout(500);
+  assert.equal(idas.length, 1);
+  assert.equal(await avaliar(a, `renovarSePreciso()`), false);
+  const aviso = await a.innerText('#avisoSync');
+  assert.match(aviso, /Sincronização com o Drive pausada/);
+  assert.match(aviso, /Reconectar/);
+  // Reconectar leva ao Google pedindo a confirmação (sem prompt=none).
+  await a.click('#avisoSync button');
+  await a.waitForFunction(() => location.href.startsWith('https://accounts.google.com'), null, { timeout: 10000 });
+  assert.equal(new URL(idas[1]).searchParams.get('prompt'), null);
+  assert.deepEqual(a.erros, []);
+  await a.fechar();
+});
+
+test('sem internet: avisa, tenta de novo sozinho e sincroniza quando a conexão volta', { timeout: 60000 }, async () => {
+  const drive = driveFalso();
+  const a = await abrirApp();
+  await drive.ligar(a);
+  let falhar = true;
+  await a.route('https://www.googleapis.com/**', r => (falhar ? r.abort() : r.fallback()));
+  await definirDados(a, DADOS);
+  await conectar(a);
+  assert.match(await sincronizarJa(a), /Não sincronizou: sem conexão com o Drive/);
+  assert.match(await a.innerText('#avisoSync'), /tenta de novo sozinho/);
+  assert.ok(await avaliar(a, `novaTentativa !== null`));
+  falhar = false;
+  await a.evaluate(() => window.dispatchEvent(new Event('online')));
+  await a.waitForFunction(() => /^Sincronizado/.test(syncEstado), null, { timeout: 20000 });
+  assert.equal(await avaliar(a, `document.getElementById('avisoSync')`), null);
+  assert.equal(drive.escritas, 1);
+  // A requisição bloqueada de propósito aparece como erro de rede no console.
+  assert.deepEqual(a.erros.filter(e => !/ERR_FAILED/.test(e)), []);
+  await a.fechar();
+});
