@@ -73,6 +73,7 @@ table.exp-bloco th{background:#a9d08e;color:#1d2330;text-align:center;border:1px
 table.exp-bloco td{border:1px solid var(--line);white-space:nowrap;padding:3px 6px}
 .exp-ano{font-weight:400;font-size:12px}
 table.exp-bloco tr.exp-vazia td{height:12px;padding:0;border-left:0;border-right:0}
+#impTabela{min-width:760px}#impTabela select{min-width:120px}#impRevisao h2{overflow-wrap:anywhere}
 .fp-sub{font-size:14px;margin:14px 0 6px}
 .fp-status{margin:0}
 @media print{
@@ -2421,6 +2422,450 @@ V.exportar = () => {
     </section>`;
 };
 
+/* ---------- importar fatura do cartão ----------
+   Lê a fatura (PDF, CSV, OFX, Excel ou texto colado) no próprio aparelho: o arquivo não é enviado para lugar nenhum.
+   Cada item vira uma linha para revisar, e só entra no app o que estiver marcado ao clicar em "Lançar".
+   Compra → lançamento no cartão; "Parcela 3/10" → parcelamento (as parcelas seguintes entram sozinhas nas próximas
+   faturas); valor negativo → ajuste na fatura (crédito); pagamento da fatura anterior → ignorado.
+   O mês é o da fatura no modelo do app: a fatura de outubro vence em novembro. */
+// Leitores baixados só quando necessários: PDF (pdf.js), imagem e PDF escaneado (Tesseract, reconhecimento de texto)
+// e Excel antigo .xls (SheetJS).
+const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+const TESS = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/';
+const TESS_CORE = 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/';
+const TESS_POR = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/por@1.0.0/4.0.0_best_int';
+const SHEETJS = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+const MESES_CURTOS = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+const RE_DATA_FAT = '(\\d{1,2})[\\/.-](\\d{1,2})(?:[\\/.-](\\d{4}|\\d{2}))?|(\\d{1,2})\\s*(?:de\\s+)?(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-zç]*\\.?(?:\\s*(?:de\\s+)?(\\d{4})(?!\\d))?';
+const DATA_NC = RE_DATA_FAT.replace(/\((?!\?)/g, '(?:'); // a mesma, sem grupos de captura
+// Valor: "1.234,56", "R$ 12,00", "-R$ 12,00", "12,00-", "12,00 C" (crédito) ou "12,00 D". O ponto como decimal
+// ("23.90") também vale, porque o reconhecimento de texto de imagens às vezes troca a vírgula.
+const RE_VALOR_FAT = '[-−–]?\\s*(?:R\\$\\s*)?[-−–]?\\s*(?:\\d{1,3}(?:\\.\\d{3})+|\\d+)[,.]\\d{2}(?![\\d,.])-?(?:\\s?[DCdc](?![A-Za-zÀ-ú]))?';
+const PAGAMENTO_FAT = /\b(pagamento|pgto|pagto)\b|pag(amento)?\s+(de\s+)?fatura|payment/i;
+const IGNORAR_FAT = /^(vencimento|total|subtotal|saldo|limite|fechamento|emiss[aã]o|pagamento m[ií]nimo|valor m[ií]nimo)/i;
+let impFat = null; // { cartao, mes, origem, itens, total, venc }
+let impMsg = '';
+
+// Número no formato brasileiro ("1.234,56", "-R$ 12,00", "12,00-") ou americano ("1234.56").
+function numFatura(s) {
+  if (typeof s === 'number') return s;
+  let t = String(s).replace(/\s|R\$|US\$|BRL/gi, '').replace(/[−–]/g, '-');
+  const credito = /\dC$/i.test(t);
+  t = t.replace(/(\d)[DC]$/i, '$1');
+  const neg = credito || /^-|-$/.test(t) || /^\(.*\)$/.test(t);
+  t = t.replace(/[-()]/g, '');
+  t = /,\d{1,2}$/.test(t) ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '');
+  const n = parseFloat(t);
+  return isNaN(n) ? null : (neg ? -n : n);
+}
+// Data como aparece na fatura: { d, m, y } (y = null quando a fatura não traz o ano).
+function dataFatura(s) {
+  if (typeof s === 'number') s = isoData(s);
+  s = String(s || '').trim();
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/) || s.match(/^(\d{4})(\d{2})(\d{2})/);
+  if (m) return { d: +m[3], m: +m[2], y: +m[1] };
+  m = s.match(new RegExp('^(?:' + RE_DATA_FAT + ')', 'i'));
+  if (!m) return null;
+  const d = +(m[1] || m[4]), mes = m[2] ? +m[2] : MESES_CURTOS.indexOf(m[5].toLowerCase()) + 1;
+  let y = m[3] || m[6] ? +(m[3] || m[6]) : null;
+  if (y != null && y < 100) y += 2000;
+  return d >= 1 && d <= 31 && mes >= 1 && mes <= 12 ? { d, m: mes, y } : null;
+}
+// Sem ano na fatura: o ano mais recente que não passa do vencimento (mês seguinte ao da fatura).
+function resolverDataFat(dt, mes) {
+  const venc = addM(mes, 1);
+  let y = dt.y;
+  if (y == null) { y = +venc.slice(0, 4); if (mIdx(`${y}-${pad(dt.m)}`) > mIdx(venc)) y--; }
+  return `${y}-${pad(dt.m)}-${pad(Math.min(dt.d, new Date(y, dt.m, 0).getDate()))}`;
+}
+// "LOJA PARC 02/10", "Loja - Parcela 2/10", "LOJA 02/10", "Parcela 2 de 10" → { descricao: 'LOJA', parcela: { k: 2, n: 10 } }.
+function separarParcela(desc) {
+  const res = [/\s*[-–(]?\s*parc(?:ela)?\.?\s*(\d{1,2})\s*(?:\/|de)\s*(\d{1,2})\)?/i, /\s+\(?(\d{1,2})\/(\d{1,2})\)?\s*$/];
+  for (const re of res) {
+    const m = desc.match(re);
+    if (m && +m[1] >= 1 && +m[2] >= 2 && +m[2] <= 72 && +m[1] <= +m[2])
+      return { descricao: desc.replace(m[0], ' ').replace(/\s+/g, ' ').replace(/[\s-–]+$/, '').trim(), parcela: { k: +m[1], n: +m[2] } };
+  }
+  return { descricao: desc.trim(), parcela: null };
+}
+
+// Texto da fatura (PDF, imagem ou colado): cada compra começa com a data e termina com o valor.
+// Uma linha pode ter mais de uma compra (faturas em duas colunas). Nos apps de banco, a data costuma vir sozinha
+// numa linha ("09 OUT", "Sex, 9 de outubro") e as compras abaixo só com nome e valor: elas ficam com essa data.
+function itensDoTexto(texto) {
+  const VAL = `((?:\\s+(?:US\\$\\s*)?${RE_VALOR_FAT})+)`;
+  const re = new RegExp(`^\\s*(${DATA_NC})\\s+(.+?)${VAL}(?=\\s+(?:${DATA_NC})\\s|\\s*$)`, 'i');
+  const soData = new RegExp(`^\\s*(?:[a-zà-ú]{3,}\\.?,?\\s+)?(${DATA_NC})\\s*$`, 'i');
+  const semData = new RegExp(`^\\s*(.*?[A-Za-zÀ-ú].*?)${VAL}\\s*$`, 'i');
+  const limpar = d => d.replace(/\s+(US\$|R\$|RS|R\$-)\s*$/i, '').replace(/^[^A-Za-zÀ-ú0-9*]+/, '').trim();
+  const valorFinal = s => { const v = s.match(new RegExp(RE_VALOR_FAT, 'g')); return numFatura(v[v.length - 1]); };
+  const itens = [];
+  let dataAtual = null;
+  texto.split(/\r?\n/).forEach(linha => {
+    const so = linha.match(soData);
+    if (so) { dataAtual = dataFatura(so[1]); return; }
+    let resto = linha, achou = false;
+    for (let g = 0; g < 6; g++) {
+      const m = resto.match(re);
+      if (!m) break;
+      itens.push({ dt: dataFatura(m[1]), descricao: limpar(m[2]), valor: valorFinal(m[3]) });
+      resto = resto.slice(m[0].length);
+      achou = true;
+    }
+    const m = !achou && dataAtual && linha.match(semData);
+    if (m && limpar(m[1])) itens.push({ dt: dataAtual, descricao: limpar(m[1]), valor: valorFinal(m[2]) });
+  });
+  return itens;
+}
+// Tabela (CSV ou Excel): acha o cabeçalho com data e valor, e as colunas de descrição e parcela.
+function itensDaTabela(linhas) {
+  const norm = v => semAcento(String(v == null ? '' : v)).trim();
+  const h = linhas.findIndex(l => l && l.some(c => /^(data|date)/.test(norm(c))) && l.some(c => /valor|amount|value/.test(norm(c))));
+  if (h < 0) return null;
+  const cab = linhas[h].map(norm);
+  const achar = (...res) => { for (const r of res) { const i = cab.findIndex(c => r.test(c)); if (i >= 0) return i; } return -1; };
+  const iD = achar(/^data( de compra| da compra)?$/, /^data/, /^date/);
+  const iDesc = achar(/descri/, /estabelecimento/, /lancamento/, /^title$/, /historico/, /^titulo/, /memo/, /^nome$/);
+  const iV = achar(/valor.*r\$/, /^valor$/, /^amount$/, /valor/, /amount|value/);
+  const iP = achar(/^parcela/, /installment/);
+  if (iDesc < 0) return null;
+  return linhas.slice(h + 1).map(l => {
+    if (!l || l[iV] == null || l[iV] === '') return null;
+    const dt = dataFatura(l[iD]), valor = numFatura(l[iV]);
+    let desc = String(l[iDesc] == null ? '' : l[iDesc]).trim();
+    const p = iP >= 0 ? String(l[iP] == null ? '' : l[iP]).trim() : '';
+    const mp = p.match(/^(\d{1,2})\s*(?:\/|de)\s*(\d{1,2})$/i);
+    if (mp) desc += ` Parcela ${mp[1]}/${mp[2]}`;
+    return dt && valor != null && desc ? { dt, descricao: desc, valor } : null;
+  }).filter(Boolean);
+}
+function lerCSV(t) {
+  const prim = t.split(/\r?\n/).slice(0, 5).join('\n');
+  const sep = [';', '\t', ','].map(s => [s, prim.split(s).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const linhas = [];
+  let l = [], c = '', q = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (q) { if (ch === '"') { if (t[i + 1] === '"') { c += '"'; i++; } else q = false; } else c += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === sep) { l.push(c); c = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && t[i + 1] === '\n') i++; l.push(c); linhas.push(l); l = []; c = ''; }
+    else c += ch;
+  }
+  if (c || l.length) { l.push(c); linhas.push(l); }
+  return linhas;
+}
+// OFX: cada <STMTTRN> é um item. No OFX de cartão, as compras costumam vir negativas: se a maioria for, inverte.
+function itensDoOFX(t) {
+  const campo = (b, n) => { const m = b.match(new RegExp('<' + n + '>([^<\\r\\n]*)', 'i')); return m ? m[1].trim() : ''; };
+  const itens = t.split(/<STMTTRN>/i).slice(1).map(b => ({ dt: dataFatura(campo(b, 'DTPOSTED')), descricao: campo(b, 'MEMO') || campo(b, 'NAME'), valor: numFatura(campo(b, 'TRNAMT')) }))
+    .filter(x => x.dt && x.valor != null && x.descricao);
+  if (itens.filter(x => x.valor < 0).length > itens.length / 2) itens.forEach(x => { x.valor = -x.valor; });
+  return itens;
+}
+function vencimentoNoTexto(t) {
+  const m = t.match(new RegExp('vencimento[^0-9\\n]{0,25}(' + DATA_NC + ')', 'i'));
+  const dt = m && dataFatura(m[1]);
+  if (!dt) return null;
+  return resolverDataFat(dt, addM(mkOf(hoje()), 5)); // sem ano: o mais recente até alguns meses à frente
+}
+function totalNoTexto(t) {
+  const m = t.match(new RegExp(`(?:total\\s+(?:da|desta|de\\s+sua)\\s+fatura|valor\\s+total(?:\\s+da\\s+fatura)?|total\\s+a\\s+pagar)[^0-9\\n]{0,30}?(${RE_VALOR_FAT})`, 'i'));
+  return m ? numFatura(m[1]) : null;
+}
+
+// Baixa um leitor na primeira vez que ele for usado; sem internet, falha com 'internet'.
+const carregandoScript = {};
+function carregarScript(url, global) {
+  if (window[global]) return Promise.resolve(window[global]);
+  carregandoScript[url] = carregandoScript[url] || new Promise((ok, falha) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = () => ok(window[global]);
+    s.onerror = () => { delete carregandoScript[url]; s.remove(); falha(new Error('internet')); };
+    document.head.appendChild(s);
+  });
+  return carregandoScript[url];
+}
+const carregarPdfjs = () => carregarScript(PDFJS + 'pdf.min.js', 'pdfjsLib').then(lib => { lib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js'; return lib; });
+function impStatus(t) { const el = $('impStatus'); if (el) el.textContent = t; }
+
+// Imagens (prints do app do banco, fotos, páginas de PDF escaneado) → texto, em português.
+async function textoDasImagens(imagens) {
+  const T = await carregarScript(TESS + 'tesseract.min.js', 'Tesseract');
+  impStatus('Preparando o leitor de imagens (na primeira vez, baixa cerca de 15 MB)…');
+  const w = await T.createWorker('por', 1, { workerPath: TESS + 'worker.min.js', corePath: TESS_CORE, langPath: TESS_POR });
+  const textos = [];
+  try {
+    for (let i = 0; i < imagens.length; i++) {
+      impStatus(`Lendo imagem ${i + 1} de ${imagens.length}…`);
+      textos.push((await w.recognize(imagens[i])).data.text);
+    }
+  } finally { await w.terminate(); impStatus(''); }
+  return textos.join('\n');
+}
+
+// PDF: o leitor (pdf.js) é baixado na primeira vez. Junta os pedaços de texto que estão na mesma altura da página.
+// PDF escaneado (sem texto): desenha cada página e lê como imagem.
+async function textoDoPDF(buf) {
+  const lib = await carregarPdfjs();
+  let doc = null, senha;
+  for (let tent = 0; !doc; tent++) {
+    try {
+      doc = await lib.getDocument({ data: new Uint8Array(buf.slice(0)), password: senha }).promise;
+    } catch (e) {
+      if (e.name !== 'PasswordException' || tent > 3) throw e;
+      senha = prompt(tent ? 'Senha incorreta. Digite de novo a senha do PDF:' : 'Este PDF tem senha (muitos bancos usam parte do CPF). Digite a senha para abrir; ela não é guardada:');
+      if (senha == null) throw new Error('cancelado');
+    }
+  }
+  const linhas = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const pedacos = (await (await doc.getPage(p)).getTextContent()).items.filter(i => i.str.trim());
+    const grupos = [];
+    pedacos.forEach(i => {
+      const y = i.transform[5], g = grupos.find(x => Math.abs(x.y - y) < 3);
+      if (g) g.itens.push(i); else grupos.push({ y, itens: [i] });
+    });
+    grupos.sort((a, b) => b.y - a.y)
+      .forEach(g => linhas.push(g.itens.sort((a, b) => a.transform[4] - b.transform[4]).map(i => i.str.trim()).join(' ')));
+  }
+  const texto = linhas.join('\n');
+  if (texto.replace(/\s/g, '').length >= 40 * doc.numPages) return texto;
+  const paginas = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const pag = await doc.getPage(p), vp = pag.getViewport({ scale: 2 });
+    const cv = document.createElement('canvas');
+    cv.width = vp.width; cv.height = vp.height;
+    await pag.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+    paginas.push(cv);
+  }
+  return textoDasImagens(paginas);
+}
+function textoDoArquivo(buf) {
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { return new TextDecoder('windows-1252').decode(buf); }
+}
+// Uma tabela por folha da planilha; usa a primeira que tiver compras.
+const itensDasFolhas = folhas => folhas.map(itensDaTabela).find(x => x && x.length) || [];
+// Lê um arquivo e devolve as linhas brutas e o texto (para achar vencimento e total).
+async function lerArquivoFatura(arq) {
+  const buf = await arq.arrayBuffer(), b = new Uint8Array(buf.slice(0, 8));
+  const ini = String.fromCharCode(...b);
+  if (ini.startsWith('%PDF')) { const t = await textoDoPDF(buf); return { brutos: itensDoTexto(t), texto: t }; }
+  if (/^image\//.test(arq.type) || /\.(png|jpe?g|webp|bmp|gif)$/i.test(arq.name)) { const t = await textoDasImagens([arq]); return { brutos: itensDoTexto(t), texto: t }; }
+  if (ini.startsWith('PK')) {
+    try { return { brutos: itensDasFolhas(Object.values(await XL.ler(buf))), texto: '' }; } catch (e) { /* tenta o leitor completo abaixo */ }
+  }
+  if (ini.startsWith('PK') || (b[0] === 0xD0 && b[1] === 0xCF)) { // Excel antigo (.xls) ou .xlsx que o leitor do app não entendeu
+    const X = await carregarScript(SHEETJS, 'XLSX');
+    const wb = X.read(new Uint8Array(buf), { type: 'array' });
+    return { brutos: itensDasFolhas(wb.SheetNames.map(n => X.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' }))), texto: '' };
+  }
+  const t = textoDoArquivo(buf);
+  if (/<STMTTRN>/i.test(t)) return { brutos: itensDoOFX(t), texto: '' };
+  const tab = itensDaTabela(lerCSV(t));
+  return tab && tab.length ? { brutos: tab, texto: t } : { brutos: itensDoTexto(t), texto: t };
+}
+// Aceita vários arquivos juntos (por exemplo, vários prints da mesma fatura).
+async function impLerArquivo(...arqs) {
+  arqs = arqs.flatMap(a => (a && a.length != null && !a.name ? [...a] : a ? [a] : []));
+  if (!arqs.length) return;
+  impMsg = '';
+  try {
+    const lidos = [];
+    for (const a of arqs) lidos.push(await lerArquivoFatura(a));
+    impMontar(lidos.flatMap(l => l.brutos), arqs.map(a => a.name).join(', '), lidos.map(l => l.texto).join('\n'));
+  } catch (e) {
+    impStatus('');
+    if (e.message === 'cancelado') return;
+    alert(e.message === 'internet' ? 'Para ler esse arquivo, o app precisa de internet na primeira vez (o leitor é baixado). Tente de novo conectado, ou cole o texto da fatura.'
+      : 'Não consegui ler esse arquivo. Tente o CSV ou o OFX do banco, ou cole o texto da fatura.');
+  }
+}
+function impMontarTexto(t, origem) {
+  if (/<STMTTRN>/i.test(t)) return impMontar(itensDoOFX(t), origem, '');
+  const tab = itensDaTabela(lerCSV(t));
+  impMontar(tab && tab.length ? tab : itensDoTexto(t), origem, t);
+}
+function impLerTexto() {
+  const t = $('impTexto').value;
+  if (!t.trim()) return alert('Cole o texto da fatura no campo.');
+  impMsg = '';
+  impMontarTexto(t, 'texto colado');
+}
+
+// Categoria: a mesma da última compra com a mesma descrição; senão, por palavras conhecidas; senão, Outros.
+const PALAVRAS_CATEGORIA = [
+  [/ifood|rappi|restaurante|lanchonete|padaria|mercado|supermerc|hortifruti|acougue|pizzaria|burger|mcdonald|cafe|atacad|assai|carrefour|pao de acucar/, 'Alimentação'],
+  [/uber|99app|99 pop|99pop|taxi|posto|combust|shell|ipiranga|petrobras|estaciona|pedagio|sem parar|conectcar|metro|onibus/, 'Transporte'],
+  [/farmacia|drogaria|droga|raia|pacheco|panvel|hospital|clinica|laborat|odonto|dentist|unimed/, 'Saúde'],
+  [/netflix|spotify|prime video|amazon prime|disney|hbo|youtube|deezer|globoplay|apple\.com|icloud|google one|paramount|assinatura/, 'Assinaturas'],
+  [/cinema|ingresso|teatro|steam|playstation|xbox|nintendo|hotel|airbnb|booking|decolar|latam/, 'Lazer'],
+  [/escola|faculdade|curso|udemy|alura|livraria|papelaria/, 'Educação'],
+  [/renner|riachuelo|c&a|zara|shein|centauro|netshoes|calcad|hering/, 'Vestuário'],
+  [/aluguel|condominio|energia|enel|cemig|copel|sabesp|internet/, 'Moradia']
+];
+const chaveDesc = d => semAcento(d || '').replace(/[^a-z ]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !/^parc/.test(w)).slice(0, 2).join(' ');
+function categoriaSugerida(desc) {
+  const cats = S.config.categorias, k = chaveDesc(desc);
+  const h = k && [...S.lancamentos, ...S.parcelados].filter(x => x.categoria && cats.includes(x.categoria) && chaveDesc(x.descricao) === k).pop();
+  if (h) return h.categoria;
+  const d = semAcento(desc);
+  const p = PALAVRAS_CATEGORIA.find(([re, c]) => re.test(d) && cats.includes(c));
+  return p ? p[1] : (cats.includes('Outros') ? 'Outros' : cats[0]);
+}
+
+function impMontar(brutos, origem, texto) {
+  const itens = brutos.filter(b => b.dt && b.valor && !IGNORAR_FAT.test(b.descricao)).map(b => {
+    const { descricao, parcela } = separarParcela(b.descricao);
+    const tipo = PAGAMENTO_FAT.test(descricao) ? 'pagamento' : b.valor < 0 ? 'credito' : 'compra';
+    return { id: uid(), dt: b.dt, descricao, valor: Math.round(Math.abs(b.valor) * 100) / 100, parcela: tipo === 'compra' ? parcela : null, tipo,
+      categoria: categoriaSugerida(descricao) };
+  });
+  if (!itens.length) {
+    impFat = null;
+    impMsg = 'Não encontrei compras nesse arquivo. Tente o CSV ou o OFX do banco, ou copie o texto da fatura e cole no campo abaixo.';
+    return render();
+  }
+  // Mês da fatura: pelo vencimento, se a fatura informar; senão, o mês com mais compras à vista.
+  const venc = texto ? vencimentoNoTexto(texto) : null;
+  let mes = venc ? addM(mkOf(venc), -1) : null;
+  if (!mes) {
+    const cont = {};
+    itens.filter(i => i.tipo === 'compra' && !i.parcela).forEach(i => { const m = mkOf(resolverDataFat(i.dt, addM(mkOf(hoje()), 1))); cont[m] = (cont[m] || 0) + 1; });
+    mes = Object.keys(cont).sort((a, b) => cont[b] - cont[a] || b.localeCompare(a))[0] || addM(mkOf(hoje()), -1);
+  }
+  impFat = { cartao: impFat && impFat.cartao || S.config.cartoes[0] || '', mes, venc, origem, itens, total: texto ? totalNoTexto(texto) : null };
+  impAnalisar();
+  render();
+}
+// Situação de cada item no cartão e mês escolhidos: o que já está no app fica desmarcado.
+function impAnalisar() {
+  const { cartao, mes } = impFat, usados = new Set();
+  impFat.itens.forEach(it => {
+    const data = resolverDataFat(it.dt, mes);
+    let sit;
+    if (it.tipo === 'pagamento') sit = 'pagamento';
+    else if (it.tipo === 'credito') sit = (S.creditos || []).some(c => c.cartao === cartao && c.mes === mes && Math.abs(c.valor - it.valor) < 0.01) ? 'lancado' : 'credito';
+    else if (it.parcela) {
+      const p = S.parcelados.find(x => !usados.has(x.id) && x.cartao === cartao && x.parcelas === it.parcela.n && Math.abs(valorParcela(x) - it.valor) < 0.02 && parcelaAtiva(x, mes));
+      if (p) usados.add(p.id);
+      sit = p ? 'lancado' : 'parcela';
+    } else {
+      const l = S.lancamentos.find(x => !usados.has(x.id) && x.forma === 'Cartão' && x.cartao === cartao && Math.abs(x.valor - it.valor) < 0.01 &&
+        (Math.abs(diasEntre(x.data, data)) <= 3 || (mesFatLanc(x) === mes && chaveDesc(x.descricao) === chaveDesc(it.descricao))));
+      const r = !l && S.recorrentes.find(x => !usados.has(x.id) && x.grupo === 'Cartão' && x.cartao === cartao && Math.abs(x.valor - it.valor) < 0.01 && recNaFatura(x, mes));
+      if (l || r) usados.add((l || r).id);
+      sit = l ? 'lancado' : r ? 'recorrente' : 'nova';
+    }
+    it.situacao = sit;
+    it.marcado = ['nova', 'parcela', 'credito'].includes(sit);
+  });
+}
+const SITUACAO_FAT = {
+  nova: 'Nova compra', parcela: 'Parcela: cria o parcelamento', credito: 'Crédito: ajuste na fatura',
+  lancado: 'Já está no app', recorrente: 'Já prevista (recorrente)', pagamento: 'Pagamento: ignorado'
+};
+function impMudar(campo, v) {
+  if (!impFat || !v) return render();
+  impFat[campo] = v;
+  impAnalisar();
+  render();
+}
+function impItem(id, campo, v) {
+  const it = impFat && impFat.itens.find(x => x.id === id);
+  if (!it) return;
+  it[campo] = campo === 'marcado' ? !!v : v;
+  render();
+}
+function impMarcarTodos(v) { impFat.itens.forEach(i => { if (i.tipo !== 'pagamento') i.marcado = v; }); render(); }
+function impCancelar() { impFat = null; impMsg = ''; render(); }
+function lancarFatura() {
+  const { cartao, mes } = impFat;
+  if (!cartao) return alert('Escolha o cartão.');
+  const sel = impFat.itens.filter(i => i.marcado && i.tipo !== 'pagamento');
+  if (!sel.length) return alert('Nenhum item marcado.');
+  const n = { compra: 0, parcela: 0, credito: 0 };
+  sel.forEach(it => {
+    const data = resolverDataFat(it.dt, mes);
+    if (it.tipo === 'credito') {
+      S.creditos = [...(S.creditos || []), { id: uid(), cartao, mes, valor: it.valor, descricao: it.descricao }];
+      n.credito++;
+    } else if (it.parcela) {
+      const { k, n: tot } = it.parcela;
+      S.parcelados.push({ id: uid(), dataCompra: data, cartao, descricao: it.descricao, categoria: it.categoria,
+        valorTotal: Math.round(it.valor * tot * 100) / 100, valorParcela: it.valor, parcelas: tot, inicio: addM(mes, -(k - 1)) });
+      n.parcela++;
+    } else {
+      // A compra fica na fatura escolhida: do mês da fatura, ou do mês anterior como "próxima fatura".
+      // Compra de outro mês (lançada atrasada pelo banco) entra no 1º dia do mês, com a data original na descrição.
+      const mm = mkOf(data), d = mIdx(mm) - mIdx(mes);
+      const dataFinal = d === 0 || d === -1 ? data : d < -1 ? `${addM(mes, -1)}-01` : `${mes}-01`;
+      S.lancamentos.push({ id: uid(), data: dataFinal, descricao: it.descricao + (dataFinal === data ? '' : ` (compra de ${fmtData(data)})`),
+        categoria: it.categoria, forma: 'Cartão', cartao, valor: it.valor, ...(mkOf(dataFinal) !== mes ? { prox: true } : {}) });
+      n.compra++;
+    }
+  });
+  impMsg = `Lançado na fatura ${mFatura(mes)} do ${cartao}: ${n.compra} compra(s), ${n.parcela} parcelamento(s) e ${n.credito} crédito(s).`;
+  faturaMes = mes;
+  impFat = null;
+  commit();
+}
+
+V.importar = () => {
+  const f = impFat;
+  const topo = `<section class="card"><h2>Importar fatura do cartão</h2>
+      <div class="filtros" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+        <label>Arquivo da fatura (PDF, prints, CSV, OFX ou Excel)<input type="file" id="impArq" multiple accept=".pdf,.csv,.ofx,.qfx,.xlsx,.xls,.txt,image/*" onchange="impLerArquivo(this.files);this.value=''"></label>
+      </div>
+      <details style="margin-top:10px"><summary>Ou cole o texto da fatura</summary>
+        <textarea id="impTexto" rows="6" style="width:100%;margin-top:8px" placeholder="Copie as linhas das compras no app ou site do banco e cole aqui."></textarea>
+        <button id="impLerTexto" style="margin-top:8px" onclick="impLerTexto()">Ler texto colado</button>
+      </details>
+      <p class="muted" style="margin-top:10px">A leitura é feita neste aparelho: o arquivo não é enviado para lugar nenhum. Funciona com o PDF da fatura (também escaneado), com prints ou fotos da fatura no app do banco (pode escolher vários de uma vez) e com os arquivos CSV, OFX e Excel (.xlsx ou .xls) que os bancos exportam. Os leitores de PDF, imagem e .xls são baixados da internet na primeira vez. Se o PDF tiver senha, o app pede a senha e não a guarda. Nada é lançado antes da sua revisão.</p>
+      <p id="impStatus" class="muted" style="margin-top:6px;font-weight:600"></p>
+      ${impMsg ? `<p id="impMsg" style="margin-top:10px"><strong>${esc(impMsg)}</strong>${impMsg.startsWith('Lançado') ? ` <button class="small" onclick="ir('faturas')">Ver a fatura</button>` : ''}</p>` : ''}
+    </section>`;
+  if (!f) return topo;
+  const ativos = f.itens.filter(i => i.tipo !== 'pagamento');
+  const soma = arr => Math.round(arr.reduce((a, i) => a + (i.tipo === 'credito' ? -i.valor : i.valor), 0) * 100) / 100;
+  const lido = soma(ativos), aLancar = soma(f.itens.filter(i => i.marcado && i.tipo !== 'pagamento'));
+  const qtd = f.itens.filter(i => i.marcado && i.tipo !== 'pagamento').length;
+  const dif = f.total != null ? Math.round((f.total - lido) * 100) / 100 : null;
+  const linhas = f.itens.map(i => `<tr class="${i.marcado ? '' : 'muted'}">
+      <td>${i.tipo === 'pagamento' ? '' : `<input type="checkbox" id="impM_${i.id}" ${i.marcado ? 'checked' : ''} onchange="impItem('${i.id}', 'marcado', this.checked)">`}</td>
+      <td>${fmtData(resolverDataFat(i.dt, f.mes))}</td>
+      <td><input type="text" value="${esc(i.descricao)}" onchange="impItem('${i.id}', 'descricao', this.value)" style="min-width:160px"></td>
+      <td>${i.tipo === 'compra' ? `<select onchange="impItem('${i.id}', 'categoria', this.value)">${opts(S.config.categorias, i.categoria)}</select>` : ''}</td>
+      <td class="num ${i.tipo === 'compra' ? 'neg' : 'pos'}">${i.tipo === 'compra' ? '' : '−'}${brl(i.valor)}</td>
+      <td>${SITUACAO_FAT[i.situacao]}${i.parcela ? ` <span class="muted">(${i.parcela.k} de ${i.parcela.n}${i.situacao === 'parcela' && i.parcela.n > i.parcela.k ? `; as ${i.parcela.n - i.parcela.k} seguintes entram nas próximas faturas` : ''})</span>` : ''}</td>
+    </tr>`).join('');
+  return `${topo}
+    <section class="card" id="impRevisao"><h2>Revisar ${f.itens.length} itens lidos · ${esc(f.origem)}</h2>
+      <div class="filtros" style="grid-template-columns:repeat(auto-fit,minmax(200px,260px))">
+        <label>Cartão<select id="impCartao" onchange="impMudar('cartao', this.value)">${f.cartao ? '' : '<option value=""></option>'}${opts(S.config.cartoes, f.cartao)}</select></label>
+        <label>Mês da fatura<input type="month" id="impMes" value="${f.mes}" onchange="impMudar('mes', this.value)"></label>
+      </div>
+      <p class="muted" style="margin-top:8px">Fatura ${mFatura(f.mes)}${f.venc ? `, pelo vencimento em ${fmtData(f.venc)} encontrado no arquivo` : ', pelas datas das compras: confira'}. No app, a fatura de um mês vence no mês seguinte.</p>
+      <div class="grid" style="margin-top:12px">
+        ${card('Soma dos itens lidos', brl(lido), 'Compras menos créditos, sem pagamentos', 'neg')}
+        ${f.total != null ? card('Total da fatura no arquivo', brl(f.total), Math.abs(dif) < 0.01 ? 'Bate com a soma dos itens' : `Diferença de ${brl(dif)}: confira se faltou alguma linha`, Math.abs(dif) < 0.01 ? 'pos' : 'neg') : ''}
+        ${card('A lançar agora', brl(aLancar), `${qtd} item(ns) marcado(s)`, 'neg')}
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="impLancar" onclick="lancarFatura()">Lançar ${qtd} item(ns) marcado(s)</button>
+        <button class="small" onclick="impMarcarTodos(true)">Marcar todos</button>
+        <button class="small" onclick="impMarcarTodos(false)">Desmarcar todos</button>
+        <button class="small danger" onclick="impCancelar()">Cancelar</button>
+      </div>
+      <p class="muted" style="margin-top:8px">O que já está no app (mesmo cartão, mesmo valor e data próxima, parcelamento igual ou conta recorrente no cartão) vem desmarcado, para não contar duas vezes. Confira as categorias: a sugestão vem da última compra com o mesmo nome.</p>
+      <div class="scroll" style="margin-top:12px"><table id="impTabela">
+        <thead><tr><th></th><th>Data</th><th>Descrição</th><th>Categoria</th><th class="num">Valor</th><th>Situação</th></tr></thead>
+        <tbody>${linhas}</tbody>
+      </table></div>
+    </section>`;
+};
+
 /* ---------- período de férias: datas, meses afetados e valores ---------- */
 const fpPlano = id => (S.feriasPlanos || []).find(x => x.id === id);
 function somaDias(iso, n) {
@@ -2836,7 +3281,7 @@ function render() {
   $('aviso').innerHTML = avisoBackup() + avisoVencimento() + avisoChecklist();
   $('abas').innerHTML = [
     ['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'],
-    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['ferias', 'Férias'], ['exportar', 'Exportar gastos'],
+    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['importar', 'Importar fatura'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['ferias', 'Férias'], ['exportar', 'Exportar gastos'],
     ['eventuais', 'Eventuais'], ['patrimonio', 'Patrimônio'], ['config', 'Configurações']
   ].map(([k, t]) => `<button class="tab ${k === aba ? 'on' : ''}" onclick="ir('${k}')">${t}</button>`).join('');
   // Preserva as posições de rolagem (tabelas largas e barra de abas) entre redesenhos.
