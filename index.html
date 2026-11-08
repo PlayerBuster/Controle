@@ -3276,9 +3276,10 @@ function avisoBackup() {
     <button class="small" onclick="exportar()">Exportar backup</button></div>`;
 }
 
+function atualizarAvisos() { $('aviso').innerHTML = avisoSync() + avisoBackup() + avisoVencimento() + avisoChecklist(); }
 function render() {
   const navX = $('abas').scrollLeft;
-  $('aviso').innerHTML = avisoBackup() + avisoVencimento() + avisoChecklist();
+  atualizarAvisos();
   $('abas').innerHTML = [
     ['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'],
     ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['importar', 'Importar fatura'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['ferias', 'Férias'], ['exportar', 'Exportar gastos'],
@@ -4551,8 +4552,18 @@ const SYNC_KEY = 'cf-sync', SYNC_ARQ = 'controle-financeiro.enc';
 const SYNC_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
-const ssGet = k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
-const ssSet = (k, v) => { try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) {} };
+// Acesso do Google e senha de sincronização ficam guardados neste aparelho, para continuar conectado ao reabrir o app.
+// Antes ficavam só na sessão, e fechar o app no celular desconectava. "Desconectar" apaga os dois.
+const ssGet = k => {
+  try {
+    const v = localStorage.getItem(k);
+    if (v !== null) return v;
+    const s = sessionStorage.getItem(k); // versão antiga: traz da sessão para o aparelho
+    if (s !== null) { localStorage.setItem(k, s); sessionStorage.removeItem(k); }
+    return s;
+  } catch (e) { return null; }
+};
+const ssSet = (k, v) => { try { sessionStorage.removeItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} };
 // clientId: do Google Cloud; arquivoId: não usado para busca; base: modificadoEm da última versão sincronizada
 let syncCfg = lsGet(SYNC_KEY, {});
 let syncEstado = '';
@@ -4590,20 +4601,55 @@ function conectarDrive() {
   if (senha.length < 6) return setSync('A senha de sincronização precisa ter pelo menos 6 caracteres.');
   ssSet('cf-senha', senha);
   if (tokenValido()) return sincronizar();
+  irAoGoogle(false);
+}
+// O acesso do Google vale 1 hora. Para renovar sem pedir nada, o app vai ao Google com prompt=none e volta na hora;
+// se o Google precisar de uma confirmação, volta com erro e o app mostra o botão "Reconectar".
+let renovacaoFalhou = false;
+function irAoGoogle(silencioso) {
+  const id = (syncCfg.clientId || '').trim();
+  if (!id) return;
+  lsSet('cf-renovacao', Date.now());
   location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
-    client_id: id, redirect_uri: redirectUri(), response_type: 'token', scope: SYNC_SCOPE, include_granted_scopes: 'true'
+    client_id: id, redirect_uri: redirectUri(), response_type: 'token', scope: SYNC_SCOPE, include_granted_scopes: 'true',
+    ...(silencioso ? { prompt: 'none' } : {})
   });
+}
+const syncPronto = () => !!(syncCfg.clientId && ssGet('cf-senha'));
+const digitando = () => { const el = document.activeElement; return !!el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName); };
+// Renova sozinho quando o acesso venceu: ao abrir o app, ao voltar para ele e de minuto em minuto,
+// nunca no meio de uma digitação e no máximo uma vez a cada 2 minutos (evita ficar indo e voltando).
+function renovarSePreciso() {
+  if (!syncPronto() || tokenValido() || renovacaoFalhou || !navigator.onLine || document.hidden || digitando()) return false;
+  if (Date.now() - Number(lsGet('cf-renovacao', 0)) < 120000) return false;
+  irAoGoogle(true);
+  return true;
 }
 function lerRetornoOAuth() {
   const p = new URLSearchParams(location.hash.slice(1));
-  const t = p.get('access_token');
-  if (!t) return;
-  ssSet('cf-token', t);
-  ssSet('cf-exp', String(Date.now() + (Number(p.get('expires_in')) || 3600) * 1000 - 60000));
+  const t = p.get('access_token'), erro = p.get('error');
+  if (!t && !erro) return;
+  if (t) {
+    ssSet('cf-token', t);
+    ssSet('cf-exp', String(Date.now() + (Number(p.get('expires_in')) || 3600) * 1000 - 60000));
+    lsSet('cf-renovacao', 0);
+  } else renovacaoFalhou = true;
   history.replaceState(null, '', location.pathname + location.search);
+}
+// Aviso no topo quando a sincronização parou: o app continua salvando neste aparelho e envia ao reconectar.
+function avisoSync() {
+  try {
+    if (!syncPronto()) return '';
+    if (!tokenValido()) return `<div class="aviso" id="avisoSync"><span>Sincronização com o Drive pausada: o acesso do Google precisa ser renovado. Suas alterações ficam salvas neste aparelho e vão para o Drive ao reconectar.</span>
+      <button class="small" onclick="irAoGoogle(false)">Reconectar</button></div>`;
+    if (syncEstado.startsWith('Não sincronizou')) return `<div class="aviso" id="avisoSync"><span>${esc(syncEstado)}. O app tenta de novo sozinho.</span>
+      <button class="small" onclick="sincronizar()">Tentar agora</button></div>`;
+  } catch (e) { /* antes de a sincronização carregar */ }
+  return '';
 }
 function desconectarDrive() {
   ssSet('cf-token', null); ssSet('cf-exp', null); ssSet('cf-senha', null);
+  renovacaoFalhou = false;
   clearTimeout(envioAgendado);
   setSync('Desconectado. Os dados continuam salvos neste aparelho.');
   render();
@@ -4620,7 +4666,7 @@ function salvarClientId(e) {
 async function drive(url, opts = {}) {
   if (!tokenValido()) throw new Error('sessão do Google expirou; conecte de novo');
   const r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + ssGet('cf-token'), ...(opts.headers || {}) } });
-  if (r.status === 401) { ssSet('cf-token', null); throw new Error('sessão do Google expirou; conecte de novo'); }
+  if (r.status === 401) { ssSet('cf-token', null); ssSet('cf-exp', null); throw new Error('sessão do Google expirou; conecte de novo'); }
   if (!r.ok) throw new Error('o Drive respondeu ' + r.status);
   return r;
 }
@@ -4741,15 +4787,22 @@ async function sincronizar() {
     lsSet('cf-base', final);
     setSync('Sincronizado às ' + hora());
   } catch (e) {
-    setSync('Não sincronizou: ' + e.message);
+    // Sem internet ou falha de rede: tenta de novo em 30 segundos (e ao voltar a internet).
+    const rede = e instanceof TypeError;
+    setSync('Não sincronizou: ' + (rede ? 'sem conexão com o Drive' : e.message));
+    if (rede) { clearTimeout(novaTentativa); novaTentativa = setTimeout(agendarEnvio, 30000); }
+    if (!tokenValido()) renovarSePreciso();
   } finally {
     sincronizando = false;
     if (pendente) { pendente = false; agendarEnvio(); }
+    atualizarAvisos();
   }
 }
+let novaTentativa = null;
 
 function agendarEnvio() {
-  if (!syncCfg.clientId || !ssGet('cf-senha') || !tokenValido()) return;
+  if (!syncPronto()) return;
+  if (!tokenValido()) { renovarSePreciso(); return; }
   if (sincronizando) { pendente = true; return; }
   clearTimeout(envioAgendado);
   envioAgendado = setTimeout(sincronizar, 1500);
@@ -4779,7 +4832,7 @@ function blocoSync() {
   const conectado = tokenValido();
   return `
     <section class="card"><h2>Sincronização entre aparelhos (Google Drive)</h2>
-      <p class="muted">Os dados vão para uma pasta privada do app no seu Drive, cifrados com a sua senha. Use o mesmo Client ID e a mesma senha em todos os aparelhos.</p>
+      <p class="muted">Os dados vão para uma pasta privada do app no seu Drive, cifrados com a sua senha. Use o mesmo Client ID e a mesma senha em todos os aparelhos. Conectado, o app guarda a senha neste aparelho e renova sozinho o acesso do Google, que vence a cada hora; use "Desconectar" num aparelho que não é seu.</p>
       <form class="fields" onsubmit="salvarClientId(event)">
         <label>Client ID do Google Cloud <input id="sync-cid" value="${esc(syncCfg.clientId || '')}" placeholder="xxxxx.apps.googleusercontent.com"></label>
         <p class="muted">Endereço de retorno que deve estar cadastrado no Google Cloud: <code>${esc(redirectUri())}</code></p>
@@ -4806,11 +4859,15 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) naviga
 lerRetornoOAuth();
 aba = lerAba();
 render();
-if (tokenValido() && ssGet('cf-senha') && syncCfg.clientId) sincronizar();
-// Ao voltar para a página (ex.: trocar de aplicativo no celular), sincroniza sozinho.
+if (syncPronto()) { if (tokenValido()) sincronizar(); else renovarSePreciso(); }
+// Ao voltar para a página (ex.: trocar de aplicativo no celular), sincroniza sozinho, renovando o acesso se venceu.
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && syncCfg.clientId && tokenValido() && ssGet('cf-senha')) sincronizar();
+  if (document.hidden || !syncPronto()) return;
+  if (tokenValido()) sincronizar(); else renovarSePreciso();
 });
+window.addEventListener('online', () => { if (syncPronto() && tokenValido()) sincronizar(); });
+// Com o app aberto por mais de 1 hora: renova quando o acesso vencer e atualiza o aviso.
+setInterval(() => { if (syncPronto() && !tokenValido() && !renovarSePreciso()) atualizarAvisos(); }, 60000);
 </script>
 </body>
 </html>
