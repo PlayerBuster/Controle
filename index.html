@@ -186,6 +186,8 @@ function blank() {
     planoFerias: [],
     feriasPlanos: [],
     regrasCategoria: [],
+    destinos: [],
+    planoGuardar: [],
     eventuais: [],
     lancamentos: [],
     ferias: {},
@@ -384,6 +386,8 @@ function projecao(n) {
     r.adj = adj;
     r.L = r.I + adj;
     r.saldo = r.rt - r.L;
+    r.guardar = guardarMes(r.m);
+    r.livre = r.saldo - r.guardar; // só separação: o saldo acumulado continua com a sobra inteira
     acum += r.saldo;
     r.acum = acum;
     r.exec = execMes(r.m);
@@ -410,6 +414,75 @@ function projPatr() {
     }
   }
   return { P, fv, i, mes };
+}
+
+/* ---------- guardar: destinos, plano e valores guardados ----------
+   S.destinos = [{ id, nome, meta }]. S.planoGuardar = [{ id, destinoId, forma: 'valor' | 'pct', valor, de, ate }]:
+   valor fixo ou % da receita do mês, de um mês até outro (ate vazio = sem fim). O que foi guardado de verdade são
+   os aportes do Patrimônio com destinoId. Não muda a Projeção nem a Saúde: só separa a sobra em "para guardar" e "livre". */
+const planoAtivo = (p, m) => mIdx(p.de) <= mIdx(m) && (!p.ate || mIdx(m) <= mIdx(p.ate));
+const valorPlano = (p, m) => (p.forma === 'pct' ? Math.round(mesBase(m).rt * p.valor) / 100 : Number(p.valor) || 0);
+const guardarMes = (m, destinoId) => (S.planoGuardar || []).filter(p => planoAtivo(p, m) && (!destinoId || p.destinoId === destinoId))
+  .reduce((a, p) => a + valorPlano(p, m), 0);
+const guardadoMes = (m, destinoId) => S.patrimonio.aportes.filter(a => mkOf(a.data) === m && (!destinoId || a.destinoId === destinoId))
+  .reduce((a, x) => a + x.valor, 0);
+const guardadoDestino = id => S.patrimonio.aportes.filter(a => a.destinoId === id).reduce((a, x) => a + x.valor, 0);
+// Mês em que o destino chega à meta seguindo o plano (o que já foi guardado no mês desconta o planejado dele).
+function previsaoMeta(d, m0 = mkOf(hoje())) {
+  if (!(d.meta > 0)) return null;
+  let tem = guardadoDestino(d.id);
+  if (tem >= d.meta - 0.005) return { ja: true };
+  for (let k = 0; k < 600; k++) {
+    const m = addM(m0, k);
+    tem += Math.max(0, guardarMes(m, d.id) - guardadoMes(m, d.id));
+    if (tem >= d.meta - 0.005) return { mes: m, meses: k + 1 };
+  }
+  return { nunca: true };
+}
+
+/* ---------- quanto posso gastar ----------
+   Ainda pode gastar = receita − tudo o que já está lançado ou previsto (contas, faturas, parcelas, eventuais e
+   compras do mês) − valor a guardar. O orçamento ainda não gasto faz parte do que se pode gastar.
+   Para gastar no mês = ainda pode gastar + compras do dia a dia já lançadas no mês (pela data). */
+function podeGastar(m) {
+  const b = mesBase(m), guardar = guardarMes(m);
+  const gasto = S.lancamentos.filter(l => avulsoConta(l) && mkOf(l.data) === m).reduce((a, l) => a + l.valor, 0);
+  const restante = b.rt - (b.I - b.ov) - guardar;
+  return { m, rt: b.rt, guardar, gasto, restante, limite: restante + gasto, dias: diasNoMes(m) };
+}
+const media = xs => (xs.length ? xs.reduce((a, v) => a + v, 0) / xs.length : 0);
+function mediasGasto(m0 = mkOf(hoje())) {
+  const fut = n => {
+    const xs = Array.from({ length: n }, (_, i) => podeGastar(addM(m0, i)));
+    return { n, mes: media(xs.map(x => x.limite)), dia: media(xs.map(x => x.limite / x.dias)) };
+  };
+  const pas = [1, 2, 3].map(i => podeGastar(addM(m0, -i))).filter(x => x.gasto > 0.005);
+  return { futuro: [fut(3), fut(6), fut(12)],
+    passado: pas.length ? { n: pas.length, mes: media(pas.map(x => x.gasto)), dia: media(pas.map(x => x.gasto / x.dias)) } : null };
+}
+function blocoPodeGastar(m) {
+  const p = podeGastar(m), atual = m === mkOf(hoje()), dia = Number(hoje().slice(8, 10));
+  const diasRest = atual ? p.dias - dia + 1 : p.dias;
+  const porDia = Math.max(0, p.restante) / diasRest;
+  const ritmo = atual ? p.gasto / dia : null, fecha = ritmo != null ? ritmo * p.dias : null;
+  const md = mediasGasto(atual ? m : mkOf(hoje()));
+  const linhaMedia = (rot, x) => `<tr><td>${rot}</td><td class="num">${brl(x.mes)}</td><td class="num">${brl(x.dia)}</td></tr>`;
+  return `<section class="card" id="podeGastar"><h2>Quanto posso gastar em ${mNome(m)}</h2>
+      <div class="grid">
+        ${card('Para gastar no mês', brl(p.limite), `Receita ${brl(p.rt)} menos contas, faturas e parcelas${p.guardar ? ` e ${brl(p.guardar)} a guardar` : ''}`)}
+        ${card('Já gasto', brl(p.gasto), 'Compras do dia a dia lançadas no mês', 'neg')}
+        ${card('Ainda pode gastar', brl(p.restante), p.restante < 0 ? 'Passou do limite do mês' : 'Até o fim do mês', p.restante < 0 ? 'neg' : 'pos')}
+        ${card(atual ? 'Por dia, até o fim do mês' : 'Por dia, em média', brl(atual ? porDia : p.limite / p.dias),
+          atual ? `${diasRest} ${diasRest === 1 ? 'dia' : 'dias'}, contando hoje` : `${p.dias} dias`, (atual ? porDia : p.limite) > 0 ? 'pos' : 'neg')}
+        ${atual ? card('Seu ritmo', `${brl(ritmo)} por dia`, `Nesse ritmo, o mês fecha com ${brl(fecha)} de gastos`, fecha > p.limite + 0.005 ? 'neg' : 'pos') : ''}
+      </div>
+      <div class="scroll" style="margin-top:12px"><table id="podeGastarMedias">
+        <thead><tr><th>Média</th><th class="num">Por mês</th><th class="num">Por dia</th></tr></thead>
+        <tbody>${md.futuro.map(x => linhaMedia(`Pode gastar · próximos ${x.n} meses`, x)).join('')}
+          ${md.passado ? linhaMedia(`Gastou de verdade · últimos ${md.passado.n} ${md.passado.n === 1 ? 'mês' : 'meses'}`, md.passado) : ''}</tbody>
+      </table></div>
+      <p class="muted" style="margin-top:10px">"Ainda pode gastar" é a receita menos tudo o que já está lançado ou previsto no mês (contas fixas, faturas, parcelas, eventuais e compras) e menos o valor a guardar da aba Guardar. O orçamento que ainda não foi gasto faz parte do que você pode gastar. "Por dia" divide o que falta pelos dias que restam.</p>
+    </section>`;
 }
 
 /* ---------- ações ---------- */
@@ -609,7 +682,7 @@ function agruparPeriodos(rows, n) {
     grupos.push({
       curto: mNome(ini),
       rotulo: n === 1 ? mNome(ini) : `${mNome(ini)} – ${mNome(fim)}`,
-      rt: soma(g, 'rt'), L: soma(g, 'L'), saldo: soma(g, 'saldo'),
+      rt: soma(g, 'rt'), L: soma(g, 'L'), saldo: soma(g, 'saldo'), guardar: soma(g, 'guardar'), livre: soma(g, 'livre'),
       acum: g[g.length - 1].acum, exec: soma(g, 'exec'), dif: soma(g, 'dif'),
       futuro: g.every(r => r.futuro)
     });
@@ -1112,6 +1185,7 @@ V.projecao = () => {
       <td>${g.rotulo}</td>
       <td class="num pos">${brl(g.rt)}</td><td class="num neg">${brl(g.L)}</td>
       <td class="num ${g.saldo < 0 ? 'neg' : 'pos'}">${brl(g.saldo)}</td>
+      <td class="num">${g.guardar ? brl(g.guardar) : '—'}</td><td class="num ${g.livre < 0 ? 'neg' : 'pos'}">${brl(g.livre)}</td>
       <td class="num ${g.acum < 0 ? 'neg' : 'pos'}">${brl(g.acum)}</td>
       <td class="num">${g.futuro ? '—' : brl(g.exec)}</td><td class="num ${g.dif < 0 ? 'neg' : ''}">${g.futuro ? '—' : brl(g.dif)}</td>
     </tr>`).join('');
@@ -1127,8 +1201,10 @@ V.projecao = () => {
       ${graficoProj(grupos, tipoGrafico)}
     </section>
     ${cardGastoReal()}
-    <section class="card"><h2>Comparativo por período</h2><div class="scroll"><table>
-      <thead><tr><th>Período</th><th class="num">Receitas</th><th class="num">Despesas</th><th class="num">Saldo</th>
+    <section class="card"><h2>Comparativo por período</h2>
+      ${(S.planoGuardar || []).length ? '<p class="muted" style="margin:0 0 8px">"Para guardar" vem da aba Guardar e "Livre" é o saldo menos esse valor. O saldo acumulado continua somando a sobra inteira.</p>' : ''}
+      <div class="scroll"><table>
+      <thead><tr><th>Período</th><th class="num">Receitas</th><th class="num">Despesas</th><th class="num">Saldo</th><th class="num">Para guardar</th><th class="num">Livre</th>
         <th class="num">Saldo acumulado</th><th class="num">Gasto lançado</th><th class="num">Previsto − lançado</th></tr></thead>
       <tbody>${linhas}</tbody>
     </table></div></section>
@@ -1194,6 +1270,7 @@ V.mesatual = () => {
   return `
     ${faixaMes('mesVisto', m, 'mesPasso', 'mesVer')}
     ${avisoSemReceita(m)}
+    ${blocoPodeGastar(m)}
     <section class="grid">
       ${ehAtual ? card('Dia do mês', `${dia} de ${diasMes}`, `${Math.round(dia / diasMes * 100)}% do mês decorrido`)
         : card('Mês', mNome(m), `${mesRelativo(m)} · ${diasMes} dias`)}
@@ -3364,11 +3441,126 @@ V.eventuais = () => {
     </table></div></section>`;
 };
 
+/* ---------- aba Guardar ---------- */
+let guardarEdit = null;
+function addDestino(e) {
+  e.preventDefault();
+  const f = e.target.elements, nome = f.nome.value.trim(), meta = parseFloat(f.meta.value) || 0;
+  if (!nome) return alert('Informe o nome do destino.');
+  if ((S.destinos || []).some(d => d.nome.toLowerCase() === nome.toLowerCase())) return alert(`Já existe o destino "${nome}".`);
+  S.destinos = [...(S.destinos || []), { id: uid(), nome, meta: Math.max(0, meta) }];
+  commit();
+}
+function metaDestino(id, v) { const d = (S.destinos || []).find(x => x.id === id); if (d) { d.meta = Math.max(0, parseFloat(v) || 0); commit(); } }
+function delDestino(id) {
+  const d = (S.destinos || []).find(x => x.id === id);
+  if (!d) return;
+  if (S.patrimonio.aportes.some(a => a.destinoId === id) || (S.planoGuardar || []).some(p => p.destinoId === id))
+    return alert(`"${d.nome}" tem valores guardados ou planejados. Exclua-os antes, ou deixe o destino com meta zero.`);
+  S.destinos = S.destinos.filter(x => x.id !== id);
+  commit();
+}
+function addPlanoGuardar(e) {
+  e.preventDefault();
+  const f = e.target.elements, valor = parseFloat(f.valor.value);
+  if (!f.destino.value) return alert('Crie um destino antes.');
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  if (f.forma.value === 'pct' && valor > 100) return alert('A porcentagem vai até 100.');
+  if (!f.de.value) return alert('Informe o mês de início.');
+  if (f.ate.value && f.ate.value < f.de.value) return alert('O mês final não pode ser antes do inicial.');
+  S.planoGuardar = [...(S.planoGuardar || []), { id: uid(), destinoId: f.destino.value, forma: f.forma.value, valor, de: f.de.value, ate: f.ate.value || '' }];
+  commit();
+}
+function delPlanoGuardar(id) { S.planoGuardar = (S.planoGuardar || []).filter(p => p.id !== id); commit(); }
+// Registra o que foi guardado de verdade (vira aporte do Patrimônio, com o destino).
+function addGuardado(e) {
+  e.preventDefault();
+  const f = e.target.elements, valor = parseFloat(f.valor.value);
+  if (!(valor > 0)) return alert('Informe um valor maior que zero.');
+  S.patrimonio.aportes.push({ id: uid(), data: f.data.value || hoje(), valor, descricao: f.descricao.value.trim(), destinoId: f.destino.value || '' });
+  commit();
+}
+// Atalho: guarda de uma vez o que falta do planejado do mês, em cada destino.
+function guardarPlanejado(m) {
+  const novos = (S.destinos || []).map(d => ({ d, falta: Math.round((guardarMes(m, d.id) - guardadoMes(m, d.id)) * 100) / 100 })).filter(x => x.falta > 0.005);
+  if (!novos.length) return alert('Nada a guardar neste mês: o planejado já foi guardado.');
+  const data = m === mkOf(hoje()) ? hoje() : m + '-01';
+  novos.forEach(({ d, falta }) => S.patrimonio.aportes.push({ id: uid(), data, valor: falta, descricao: `Planejado de ${mNome(m)}`, destinoId: d.id }));
+  commit();
+}
+const nomeDestino = id => ((S.destinos || []).find(d => d.id === id) || {}).nome || 'Sem destino';
+
+V.guardar = () => {
+  const ds = S.destinos || [], plano = S.planoGuardar || [], m0 = mkOf(hoje());
+  const optsDest = ds.map(d => `<option value="${d.id}">${esc(d.nome)}</option>`).join('');
+  const cards = ds.map(d => {
+    const tem = guardadoDestino(d.id), pr = previsaoMeta(d), pctMeta = d.meta > 0 ? Math.min(100, tem / d.meta * 100) : 0;
+    const quando = !pr ? 'Sem meta' : pr.ja ? '✓ Meta atingida' : pr.nunca ? 'O plano atual não chega à meta' : `Pelo plano, chega à meta em ${mNome(pr.mes)} (${pr.meses} ${pr.meses === 1 ? 'mês' : 'meses'})`;
+    return `<div class="card destino" data-id="${d.id}" style="display:grid;gap:6px">
+        <div class="row" style="justify-content:space-between"><strong>${esc(d.nome)}</strong><button class="small danger" onclick="delDestino('${d.id}')">Excluir</button></div>
+        <div style="font-size:22px;font-weight:700" class="pos">${brl(tem)}</div>
+        ${d.meta > 0 ? `<div class="bar" style="height:10px"><div style="width:${pctMeta.toFixed(1)}%"></div></div><div class="muted">${pctMeta.toFixed(0)}% de ${brl(d.meta)} · faltam ${brl(Math.max(0, d.meta - tem))}</div>` : ''}
+        <div class="muted">${quando}</div>
+        <label class="muted" style="font-size:13px">Meta (R$)<input type="number" step="0.01" min="0" id="meta_${d.id}" value="${d.meta || ''}" onchange="metaDestino('${d.id}', this.value)"></label>
+      </div>`;
+  }).join('');
+  const linhasPlano = plano.map(p => `<tr><td>${esc(nomeDestino(p.destinoId))}</td><td>${p.forma === 'pct' ? `${String(p.valor).replace('.', ',')}% da receita` : brl(p.valor)}</td>
+      <td>${mNome(p.de)}${p.ate ? (p.ate === p.de ? '' : ` a ${mNome(p.ate)}`) : ' em diante'}</td>
+      <td class="num"><button class="small danger" onclick="delPlanoGuardar('${p.id}')">Excluir</button></td></tr>`).join('')
+    || '<tr><td colspan="4" class="muted">Nenhum valor planejado.</td></tr>';
+  const meses = Array.from({ length: 12 }, (_, i) => addM(m0, i)).map(m => {
+    const b = mesBase(m), sobra = b.rt - b.I, g = guardarMes(m), feito = guardadoMes(m);
+    return `<tr><td>${mNome(m)}</td><td class="num">${brl(sobra)}</td><td class="num">${g ? brl(g) : '—'}</td>
+      <td class="num ${sobra - g < -0.005 ? 'neg' : 'pos'}">${brl(sobra - g)}</td><td class="num">${feito ? brl(feito) : '—'}</td></tr>`;
+  }).join('');
+  const aportes = S.patrimonio.aportes.filter(a => a.destinoId).sort((a, b) => b.data.localeCompare(a.data)).slice(0, 30)
+    .map(a => `<tr><td>${fmtData(a.data)}</td><td>${esc(nomeDestino(a.destinoId))}</td><td>${esc(a.descricao)}</td><td class="num pos">${brl(a.valor)}</td>
+      <td class="num"><button class="small danger" onclick="excluirAporte('${a.id}')">Excluir</button></td></tr>`).join('');
+  const faltaMes = Math.max(0, guardarMes(m0) - guardadoMes(m0));
+  return `
+    <section class="card"><h2>Para onde vai o dinheiro guardado</h2>
+      ${ds.length ? `<div class="grid">${cards}</div>` : '<p class="muted">Crie destinos como Reserva de emergência, Tesouro, CDB ou Viagem, cada um com a sua meta.</p>'}
+      <form class="fields" style="margin-top:12px" onsubmit="addDestino(event)">
+        <label>Novo destino<input type="text" name="nome" placeholder="Ex.: Reserva de emergência" required></label>
+        <label>Meta (R$)<input type="number" step="0.01" min="0" name="meta"></label>
+        <button>Adicionar destino</button>
+      </form>
+    </section>
+    <section class="card"><h2>Quanto guardar por mês</h2>
+      <form class="fields" onsubmit="addPlanoGuardar(event)">
+        <label>Destino<select name="destino">${optsDest}</select></label>
+        <label>Como<select name="forma"><option value="valor">Valor fixo (R$)</option><option value="pct">% da receita do mês</option></select></label>
+        <label>Valor<input type="number" step="0.01" min="0.01" name="valor" required></label>
+        <label>De<input type="month" name="de" value="${m0}" required></label>
+        <label>Até (vazio = sem fim)<input type="month" name="ate"></label>
+        <button>Adicionar</button>
+      </form>
+      <div class="scroll" style="margin-top:12px"><table id="planoGuardar"><thead><tr><th>Destino</th><th>Quanto</th><th>Meses</th><th></th></tr></thead><tbody>${linhasPlano}</tbody></table></div>
+      <p class="muted" style="margin-top:10px">Para um mês diferente (por exemplo, o 13º), adicione um valor só para aquele mês, com "De" e "Até" iguais. Os valores se somam.</p>
+    </section>
+    <section class="card"><h2>Próximos 12 meses</h2>
+      <div class="scroll"><table id="guardarMeses"><thead><tr><th>Mês</th><th class="num">Sobra prevista</th><th class="num">Para guardar</th><th class="num">Livre</th><th class="num">Guardado</th></tr></thead><tbody>${meses}</tbody></table></div>
+      <p class="muted" style="margin-top:10px">Sobra prevista é a da Projeção (receitas menos despesas). Livre é o que sobra depois de guardar; em vermelho, o plano pede mais do que sobra. A Projeção e a Saúde financeira não mudam com este plano.</p>
+    </section>
+    <section class="card"><h2>Registrar o que guardei</h2>
+      ${faltaMes > 0.005 ? `<div class="row" style="margin-bottom:10px"><button id="guardarMesBtn" onclick="guardarPlanejado('${m0}')">Guardei o planejado de ${mNome(m0)} (${brl(faltaMes)})</button></div>` : ''}
+      <form class="fields" onsubmit="addGuardado(event)">
+        <label>Data<input type="date" name="data" value="${hoje()}" required></label>
+        <label>Destino<select name="destino">${optsDest}<option value="">Sem destino</option></select></label>
+        <label>Valor (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
+        <label>Descrição<input type="text" name="descricao" placeholder="Ex.: Tesouro Selic"></label>
+        <button>Registrar</button>
+      </form>
+      ${aportes ? `<div class="scroll" style="margin-top:12px"><table><thead><tr><th>Data</th><th>Destino</th><th>Descrição</th><th class="num">Valor</th><th></th></tr></thead><tbody>${aportes}</tbody></table></div>` : ''}
+      <p class="muted" style="margin-top:10px">O que você registra aqui entra no Patrimônio como aporte, no destino escolhido.</p>
+    </section>`;
+};
+
 V.patrimonio = () => {
   const p = S.patrimonio;
   const r = projPatr();
   const linhas = [...p.aportes].sort((a, b) => (b.data || '').localeCompare(a.data || '')).map(a => `<tr>
-      <td>${fmtData(a.data)}</td><td>${esc(a.descricao)}</td><td class="num pos">${brl(a.valor)}</td>
+      <td>${fmtData(a.data)}</td><td>${esc(a.descricao)}${a.destinoId ? ` <span class="muted">· ${esc(nomeDestino(a.destinoId))}</span>` : ''}</td><td class="num pos">${brl(a.valor)}</td>
       <td class="num"><button class="danger small" onclick="excluirAporte('${a.id}')">Excluir</button></td>
     </tr>`).join('') || `<tr><td colspan="4" class="muted">Nenhum aporte registrado.</td></tr>`;
   const metaTxt = p.meta <= 0 ? '<span class="muted">Nenhuma meta definida.</span>'
@@ -3478,7 +3670,7 @@ function avisoBackup() {
 // Abas em quatro grupos; a linha de baixo mostra as abas do grupo da aba aberta.
 // Ao trocar de grupo, volta para a última aba usada nele.
 const GRUPOS_ABAS = [
-  ['Planejar', [['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'], ['ferias', 'Férias'], ['patrimonio', 'Patrimônio']]],
+  ['Planejar', [['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'], ['guardar', 'Guardar'], ['ferias', 'Férias'], ['patrimonio', 'Patrimônio']]],
   ['Lançar', [['lancamentos', 'Lançamentos'], ['importar', 'Importar fatura'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['eventuais', 'Eventuais'], ['conta', 'Conta']]],
   ['Conferir', [['faturas', 'Faturas'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['exportar', 'Exportar gastos']]],
   ['Configurar', [['config', 'Configurações']]]
@@ -4073,7 +4265,7 @@ function importarPlanilhaLegada(todas) {
           cartoes: cartoes.length ? cartoes : S.config.cartoes,
           categorias: categorias.length ? categorias : S.config.categorias
         },
-        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, planoFerias: [], feriasPlanos: [], regrasCategoria: [], eventuais, lancamentos, ferias
+        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, planoFerias: [], feriasPlanos: [], regrasCategoria: [], destinos: [], planoGuardar: [], eventuais, lancamentos, ferias
       };
       commit();
       alert(`Planilha importada: ${recorrentes.length} recorrentes, ${parcelados.length} parcelamento(s), ${eventuais.length} evento(s) e ${lancamentos.length} lançamento(s).`);
@@ -4550,9 +4742,12 @@ function montarPlanilha() {
   ]});
 
   // Aportes do patrimônio
-  const apo = [['Data', 'Descrição', 'Valor']];
-  p.aportes.forEach(a => apo.push([N(serialDate(a.data), FMT_DATA), a.descricao || null, N(a.valor, FMT_VALOR)]));
+  const apo = [['Data', 'Descrição', 'Valor', 'Destino']];
+  p.aportes.forEach(a => apo.push([N(serialDate(a.data), FMT_DATA), a.descricao || null, N(a.valor, FMT_VALOR), a.destinoId ? nomeDestino(a.destinoId) : null]));
   abas.push({ nome: 'Aportes', linhas: apo });
+  abas.push({ nome: 'Destinos', linhas: [['Destino', 'Meta (R$)'], ...(S.destinos || []).map(d => [d.nome, N(d.meta || 0, FMT_VALOR)])] });
+  abas.push({ nome: 'Plano_Guardar', linhas: [['Destino', 'Como (valor ou %)', 'Valor', 'De', 'Até'],
+    ...(S.planoGuardar || []).map(x => [nomeDestino(x.destinoId), x.forma === 'pct' ? '%' : 'valor', x.valor, x.de, x.ate || null])] });
 
   return abas;
 }
@@ -4676,6 +4871,7 @@ function interpretarNova(g) {
     if (Number(at(proj, r, 9)) === 1) ferias[mkOf(isoData(at(proj, r, 0))) || addM(primeiroMes, r - 4)] = true;
   }
 
+  const destinos = (g.Destinos || []).slice(1).filter(r => r[0]).map(r => ({ id: uid(), nome: String(r[0]), meta: Number(r[1]) || 0 }));
   const patrimonio = g.Patrimonio ? {
     ...S.patrimonio,
     valorInicial: Number(at(g.Patrimonio, 3, 1)) || 0,
@@ -4684,9 +4880,14 @@ function interpretarNova(g) {
     aporteMensal: Number(at(g.Patrimonio, 6, 1)) || 0,
     meta: Number(at(g.Patrimonio, 7, 1)) || 0,
     aportes: (g.Aportes || []).slice(1).filter(r => r[0] && r[2]).map(r => ({
-      id: uid(), data: isoData(r[0]) || hoje(), descricao: String(r[1] || ''), valor: Number(r[2]) || 0
+      id: uid(), data: isoData(r[0]) || hoje(), descricao: String(r[1] || ''), valor: Number(r[2]) || 0,
+      ...(r[3] && destinos.find(d => d.nome === String(r[3])) ? { destinoId: destinos.find(d => d.nome === String(r[3])).id } : {})
     }))
   } : S.patrimonio;
+  const planoGuardar = (g.Plano_Guardar || []).slice(1).filter(r => r[0] && r[2] && r[3] && destinos.some(d => d.nome === String(r[0]))).map(r => ({
+    id: uid(), destinoId: destinos.find(d => d.nome === String(r[0])).id, forma: String(r[1]) === '%' ? 'pct' : 'valor',
+    valor: Number(r[2]) || 0, de: String(r[3]).slice(0, 7), ate: r[4] ? String(r[4]).slice(0, 7) : ''
+  }));
 
   return {
     config: {
@@ -4694,7 +4895,7 @@ function interpretarNova(g) {
       cartoes: cartoes.length ? cartoes : S.config.cartoes,
       categorias: categorias.length ? categorias : S.config.categorias
     },
-    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, planoFerias, feriasPlanos, regrasCategoria, eventuais, lancamentos, ferias, patrimonio
+    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, planoFerias, feriasPlanos, regrasCategoria, destinos, planoGuardar, eventuais, lancamentos, ferias, patrimonio
   };
 }
 
