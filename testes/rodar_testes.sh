@@ -13,7 +13,7 @@ fi
 [ "$falta" = 0 ] || exit 1
 
 node --test --test-reporter=spec --test-concurrency=1 \
-  testes/calculos.test.js testes/telas.test.js testes/sw.test.js testes/sync.test.js testes/fatura.test.js testes/planilha.test.js
+  testes/calculos.test.js testes/telas.test.js testes/sw.test.js testes/sync.test.js testes/fatura.test.js testes/melhorias.test.js testes/planilha.test.js
 status=$?
 echo
 if [ "$status" = 0 ]; then echo 'TODOS OS TESTES PASSARAM.'; else echo 'HÁ TESTES FALHANDO.'; fi

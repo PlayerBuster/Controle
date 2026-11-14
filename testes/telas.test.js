@@ -317,7 +317,7 @@ test('Calculadora: sem campo tocado, usa o primeiro campo de valor da aba; sem c
   await ir('resumo');
   await pg.click('#calcBtn');
   assert.equal(await pg.isDisabled('#calcUsar'), true);
-  await pg.click('#calc button:has-text("Fechar")');
+  await pg.click('#calcBarra button'); // fechar pelo ✕
 });
 
 test('Configurações: renomear cartão atualiza compras, recorrentes, lançamentos, ajustes e opções fixas', async () => {
@@ -1399,5 +1399,29 @@ test('Faturas: todos os meses da aba aparecem como "Out/2026 (Nov./2026)"', asyn
   assert.equal(doze[11], 'Out/2027 (Nov./2027)');
   // Planilha exportada da aba.
   assert.equal(await avaliar(pg, `abaFatura('2026-10').linhas[0][0].v`), `Fatura de ${rotulo}`);
+  assert.deepEqual(pg.erros, []);
+});
+
+test('calculadora no computador: cabe na janela baixa (zoom do navegador), arrasta e fecha pelo ✕', async () => {
+  await pg.setViewportSize({ width: 911, height: 420 }); // notebook 1366×768 com zoom de 150%
+  await pg.evaluate(() => { calcPos = null; ir('lancamentos'); calcFechar(); });
+  await pg.click('#calcBtn');
+  const dentro = () => pg.evaluate(() => { const r = document.getElementById('calc').getBoundingClientRect(); return r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth; });
+  assert.ok(await dentro(), 'calculadora inteira na janela');
+  const visor = await pg.evaluate(() => document.getElementById('calcVisor').getBoundingClientRect().top);
+  assert.ok(visor >= 0, 'visor à vista');
+  // Arrasta pela barra até o canto de cima à esquerda; arrastar para fora da janela não a esconde.
+  const b = await pg.locator('#calcBarra span').boundingBox();
+  await pg.mouse.move(b.x + 5, b.y + 5);
+  await pg.mouse.down();
+  await pg.mouse.move(-300, -300, { steps: 4 });
+  await pg.mouse.up();
+  assert.deepEqual(await avaliar(pg, `(r => [r.left, r.top])(document.getElementById('calc').getBoundingClientRect())`), [0, 0]);
+  await pg.setViewportSize({ width: 700, height: 500 });
+  assert.ok(await dentro());
+  await pg.click('#calcBarra button');
+  assert.equal(await visivel('#calc'), false);
+  await pg.evaluate(() => { calcPos = null; document.getElementById('calc').removeAttribute('style'); });
+  await pg.setViewportSize({ width: 1280, height: 900 });
   assert.deepEqual(pg.erros, []);
 });

@@ -7,18 +7,34 @@ const { abrirApp, fecharNavegador, definirDados, avaliar } = require('./lib');
 after(async () => { await fecharNavegador(); });
 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+// Drive em memória: arquivos por id, com nome. "conteudo" e "escritas" se referem ao arquivo principal.
+const PRINCIPAL = 'controle-financeiro.enc';
 function driveFalso() {
-  const d = { conteudo: null, escritas: 0 };
+  const d = { arquivos: {}, escritas: 0, n: 0 };
+  Object.defineProperty(d, 'conteudo', { get() { const a = Object.values(d.arquivos).find(x => x.name === PRINCIPAL); return a ? a.conteudo : null; } });
+  d.nomes = () => Object.values(d.arquivos).map(a => a.name).sort();
+  d.criar = (name, conteudo) => { d.arquivos['arq' + (++d.n)] = { name, conteudo }; };
   d.ligar = pg => pg.route('https://www.googleapis.com/**', async route => {
-    const req = route.request(), url = req.url(), metodo = req.method();
+    const req = route.request(), u = new URL(req.url()), metodo = req.method();
     if (metodo === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
-    if (metodo === 'GET' && url.includes('alt=media')) return route.fulfill({ status: 200, headers: CORS, body: d.conteudo });
-    if (metodo === 'GET') return route.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: JSON.stringify({ files: d.conteudo ? [{ id: 'arq' }] : [] }) });
+    const id = (u.pathname.match(/files\/([^/]+)$/) || [])[1];
+    if (metodo === 'GET' && u.searchParams.get('alt') === 'media') return route.fulfill({ status: 200, headers: CORS, body: d.arquivos[id].conteudo });
+    if (metodo === 'GET') {
+      const q = u.searchParams.get('q') || '', exato = q.match(/name='([^']+)'/), contem = q.match(/name contains '([^']+)'/);
+      const files = Object.entries(d.arquivos).filter(([, a]) => (exato ? a.name === exato[1] : contem ? a.name.includes(contem[1]) : true)).map(([i, a]) => ({ id: i, name: a.name }));
+      return route.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: JSON.stringify({ files }) });
+    }
+    if (metodo === 'DELETE') { delete d.arquivos[id]; return route.fulfill({ status: 204, headers: CORS }); }
     const corpo = req.postData();
-    if (metodo === 'PATCH') d.conteudo = corpo;
-    else d.conteudo = corpo.split('application/octet-stream\r\n\r\n')[1].split('\r\n--')[0];
-    d.escritas++;
-    return route.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: JSON.stringify({ id: 'arq' }) });
+    let alvo = id;
+    if (metodo === 'PATCH') d.arquivos[id].conteudo = corpo;
+    else {
+      const meta = JSON.parse(corpo.split('\r\n\r\n')[1].split('\r\n--')[0]);
+      alvo = 'arq' + (++d.n);
+      d.arquivos[alvo] = { name: meta.name, conteudo: corpo.split('application/octet-stream\r\n\r\n')[1].split('\r\n--')[0] };
+    }
+    if (d.arquivos[alvo].name === PRINCIPAL) d.escritas++;
+    return route.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: JSON.stringify({ id: alvo }) });
   });
   return d;
 }
@@ -200,4 +216,50 @@ test('sem internet: avisa, tenta de novo sozinho e sincroniza quando a conexão 
   // A requisição bloqueada de propósito aparece como erro de rede no console.
   assert.deepEqual(a.erros.filter(e => !/ERR_FAILED/.test(e)), []);
   await a.fechar();
+});
+
+test('cópias diárias no Drive: uma por dia, ficam as 14 mais recentes, e restaurar volta os dados daquele dia', { timeout: 60000 }, async () => {
+  const drive = driveFalso();
+  const a = await abrirApp(), b = await abrirApp();
+  await drive.ligar(a); await drive.ligar(b);
+  await definirDados(a, DADOS);
+  await conectar(a); await conectar(b);
+  const hojeISO = await avaliar(a, 'hoje()');
+  assert.match(await sincronizarJa(a), /Sincronizado/);
+  assert.deepEqual(drive.nomes(), [`controle-financeiro-copia-${hojeISO}.enc`, PRINCIPAL]);
+  // A cópia é cifrada como o arquivo principal.
+  const copia = Object.values(drive.arquivos).find(x => x.name.includes('copia')).conteudo;
+  assert.doesNotMatch(copia, /Salário|Lanche/);
+  // Outra sincronização no mesmo dia não cria outra cópia.
+  await a.evaluate(() => { S.lancamentos.push({ id: 'l2', data: '2026-11-06', descricao: 'Pão', categoria: 'Alimentação', forma: 'Pix', cartao: '', valor: 5 }); });
+  await sincronizarJa(a);
+  assert.equal(drive.nomes().length, 2);
+  // Com 15 cópias antigas, a do dia entra e as mais velhas saem: ficam 14.
+  for (let i = 1; i <= 15; i++) drive.criar(`controle-financeiro-copia-2026-01-${String(i).padStart(2, '0')}.enc`, copia);
+  await a.evaluate(() => { syncCfg.ultimaCopia = '2000-01-01'; });
+  await sincronizarJa(a);
+  const copias = drive.nomes().filter(n => n.includes('copia'));
+  assert.equal(copias.length, 14);
+  assert.ok(copias.includes(`controle-financeiro-copia-${hojeISO}.enc`));
+  assert.ok(!copias.includes('controle-financeiro-copia-2026-01-01.enc') && copias.includes('controle-financeiro-copia-2026-01-15.enc'));
+  // Apaga tudo por engano no aparelho B; o apagamento vai para o Drive e para o A.
+  await sincronizarJa(b);
+  await b.evaluate(() => { S.lancamentos = []; S.recorrentes = []; commit(); });
+  await sincronizarJa(b); await sincronizarJa(a);
+  assert.deepEqual(await avaliar(a, 'S.lancamentos'), []);
+  // Restaurar a cópia de 15/01 (feita com os dados de exemplo) no A traz os dados de volta, e o B recebe.
+  await a.evaluate(() => ir('config'));
+  await a.click('button:text-is("Ver cópias diárias no Drive")');
+  await a.waitForSelector('#syncCopias');
+  assert.match(await a.innerText('#syncCopias'), /Cópia de 15\/01\/2026/);
+  const id = await avaliar(a, `copiasVistas.find(c => c.name.includes('2026-01-15')).id`);
+  await a.evaluate(i => restaurarCopia(i), id);
+  await a.waitForFunction(() => /restaurada/.test(syncEstado) || /^Sincronizado/.test(syncEstado));
+  assert.deepEqual(await avaliar(a, 'S.lancamentos.map(l => l.descricao)'), ['Lanche']);
+  await sincronizarJa(a); await sincronizarJa(b);
+  assert.deepEqual(await avaliar(b, 'S.recorrentes.map(r => r.descricao)'), ['Salário secreto']);
+  // O aviso de backup conta a cópia do dia.
+  assert.doesNotMatch(await a.innerText('#aviso'), /ainda não exportou um backup/);
+  assert.deepEqual(a.erros, []); assert.deepEqual(b.erros, []);
+  await a.fechar(); await b.fechar();
 });
