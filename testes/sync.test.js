@@ -42,7 +42,16 @@ const conectar = (pg, senha = 'senha-de-teste') => pg.evaluate(s => {
   syncCfg.clientId = 'teste';
   ssSet('cf-token', 't'); ssSet('cf-exp', String(Date.now() + 3600000)); ssSet('cf-senha', s);
 }, senha);
-const sincronizarJa = async pg => { await pg.evaluate(() => sincronizar()); return avaliar(pg, `syncEstado`); };
+// Espera a sincronização que o próprio app tenha agendado ou começado (ex.: depois de um commit) e sincroniza de novo.
+const sincronizarJa = async pg => {
+  await pg.evaluate(async () => {
+    clearTimeout(envioAgendado);
+    while (sincronizando) await new Promise(r => setTimeout(r, 50));
+    pendente = false;
+    await sincronizar();
+  });
+  return avaliar(pg, `syncEstado`);
+};
 
 const DADOS = {
   config: { cartoes: ['Nubank'], primeiroMes: '2026-11', vencimentos: { Nubank: 10 } },
