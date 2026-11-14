@@ -28,6 +28,7 @@ O arquivo testado é escolhido nesta ordem: o caminho em `CF_APP`, se houver; de
 | `fatura.test.js` | Importar fatura com faturas fictícias: PDF em duas colunas (gerado no próprio teste), PDF com senha (gerado pelo LibreOffice), PDF escaneado e print de app (reconhecimento de texto), CSV do Nubank, C6 e Inter, OFX, Excel .xlsx e .xls, vários arquivos juntos e texto colado. Confere vencimento, total, parcelas, créditos, pagamento ignorado, o que já está no app vir desmarcado e a fatura do app ficar igual ao total do PDF. |
 | `melhorias.test.js` | Abas em grupos (todas as abas num grupo, volta à última aba do grupo), quadro de gasto do dia a dia na Projeção, regras de categoria (lançamento, importação, "Sempre assim", renomear, planilha), fatura importada no Check list e a lista de avisos do celular. |
 | `guardar.test.js` | Quanto posso gastar (mês, dia, ritmo e médias de 3/6/12 meses, com valores calculados à mão) e a aba Guardar: destinos com meta, plano por valor e por %, guardar o planejado, previsão da meta, a Projeção sem mudar o saldo e a planilha mantendo tudo. |
+| `diaadia.test.js` | Orçamento 50-30-20 (grupos, ideal, sugestão, trocar grupo e método, planilha), lançamento rápido, desfazer, repetir, observação, alterar vários, conta variável com média, vencimento das contas fixas, valores a receber, quitar parcelas, busca, onde gasta, esconder valores e PIN. |
 | `lib.js` | Base comum: abre o app, troca os dados (`definirDados`), avalia expressões na página e prepara o LibreOffice. |
 
 ## Detalhes

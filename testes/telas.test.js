@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { abrirApp, fecharNavegador, definirDados, avaliar } = require('./lib');
 
 const ABAS = ['resumo', 'mesatual', 'projecao', 'simulador', 'orcamento', 'lancamentos', 'conta', 'recorrentes', 'parcelas',
-  'faturas', 'importar', 'checklist', 'calendario', 'guardar', 'ferias', 'exportar', 'eventuais', 'patrimonio', 'config'];
+  'faturas', 'importar', 'checklist', 'calendario', 'guardar', 'ferias', 'exportar', 'receber', 'busca', 'ranking', 'eventuais', 'patrimonio', 'config'];
 
 let pg;
 before(async () => { pg = await abrirApp(); });
@@ -391,7 +391,8 @@ test('Lançamentos: filtros por texto, mês, categoria, cartão/forma e tipo', a
     parcelados: [{ id: 'p', dataCompra: '2026-10-26', cartao: 'Mercado Pago', descricao: 'Celular', categoria: 'Outros', valorTotal: 1200, parcelas: 12, inicio: '2026-10' }] });
   await pg.evaluate(() => limparFiltroLanc());
   await ir('lancamentos');
-  const linhas = () => pg.$$eval('#conteudo table tbody tr td:nth-child(2)', tds => tds.map(t => t.innerText.replace(/\s*\(.*\)$/, '')));
+  // 1ª coluna: caixa de seleção; 2ª: data; 3ª: descrição.
+  const linhas = () => pg.$$eval('#conteudo table tbody tr td:nth-child(3)', tds => tds.map(t => t.innerText.replace(/\s*\(.*\)$/, '')));
   assert.deepEqual(await linhas(), ['Lanche', 'Celular', 'Mercado São João', 'Lanche']);
   // Busca ignora acentos e maiúsculas.
   await pg.fill('#fBusca', 'sao joao');
