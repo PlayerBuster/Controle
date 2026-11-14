@@ -8,7 +8,44 @@
   "background_color": "#f5f6fa",
   "theme_color": "#1d2330",
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
-  ]
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "share_target": {
+    "action": "./?compartilhar=1",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "files": [
+        {
+          "name": "fatura",
+          "accept": [
+            "application/pdf",
+            "image/*",
+            "text/csv",
+            "text/plain",
+            "application/x-ofx",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".pdf",
+            ".csv",
+            ".ofx",
+            ".qfx",
+            ".xls",
+            ".xlsx",
+            ".txt"
+          ]
+        }
+      ]
+    }
+  }
 }

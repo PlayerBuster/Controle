@@ -18,7 +18,7 @@
 body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:15px}
 header{background:var(--header);color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
 header h1{font-size:18px;margin:0}
-.abas{display:flex;gap:6px;overflow-x:auto;padding:10px 20px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2}
+.abas{display:grid;gap:8px;padding:8px 20px 10px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2}
 main{max-width:1100px;margin:0 auto;padding:20px 20px 84px;display:grid;gap:16px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
@@ -30,6 +30,9 @@ button{font:inherit;border:0;border-radius:8px;padding:8px 14px;background:var(-
 button.ghost{background:transparent;color:#fff;border:1px solid #fff}
 button.tab{background:transparent;color:var(--ink);border:1px solid var(--line);padding:6px 12px}
 button.tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.grupos,.sub-abas{display:flex;gap:6px;overflow-x:auto;min-width:0}
+button.grupo{background:transparent;color:var(--muted);border:0;border-bottom:3px solid transparent;border-radius:0;padding:4px 10px;font-weight:600}
+button.grupo.on{color:var(--accent);border-bottom-color:var(--accent)}
 button.danger{background:var(--bad)}
 button.small{padding:3px 9px;font-size:13px}
 input,select{font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;width:100%;background:var(--card);color:var(--ink)}
@@ -92,7 +95,12 @@ table.exp-bloco tr.exp-vazia td{height:12px;padding:0;border-left:0;border-right
 .dica span{float:right;margin-left:14px}
 /* Calculadora flutuante */
 .calc-fab{position:fixed;right:16px;bottom:16px;z-index:5;width:52px;height:52px;border-radius:50%;font-size:24px;padding:0;box-shadow:0 3px 12px rgba(0,0,0,.3)}
-.calc{position:fixed;right:16px;bottom:80px;z-index:6;width:min(300px,calc(100vw - 32px));background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;box-shadow:0 6px 24px rgba(0,0,0,.3);display:grid;gap:8px}
+.calc{position:fixed;right:16px;bottom:80px;z-index:6;width:min(300px,calc(100vw - 32px));background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;box-shadow:0 6px 24px rgba(0,0,0,.3);display:grid;gap:8px;max-height:calc(100vh - 96px);overflow:auto}
+.calc-barra{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;color:var(--muted);cursor:move;user-select:none;touch-action:none}
+.calc-barra button{padding:2px 10px;background:var(--line);color:var(--ink)}
+/* No computador, a calculadora fica ao lado do botão (ganha altura) e, em janela baixa ou com zoom, as teclas encolhem. */
+@media(min-width:700px){#calc.calc{bottom:16px;right:80px;max-height:calc(100vh - 32px)}}
+@media(max-height:600px){#calc.calc{gap:5px;padding:8px}#calc.calc .teclas{gap:4px}#calc.calc .teclas button{padding:5px 0;font-size:15px}#calc.calc .visor{font-size:17px;padding:4px 8px}#calc.calc .res{min-height:14px;font-size:13px}}
 .calc .visor{font-size:20px;text-align:right;font-variant-numeric:tabular-nums}
 .calc .res{text-align:right;color:var(--muted);font-size:14px;min-height:18px}
 .calc .teclas{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
@@ -177,6 +185,7 @@ function blank() {
     checklist: {},
     planoFerias: [],
     feriasPlanos: [],
+    regrasCategoria: [],
     eventuais: [],
     lancamentos: [],
     ferias: {},
@@ -223,7 +232,7 @@ let falhaSalvar = false; // true quando o navegador recusa gravar (armazenamento
 function salvar() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); falhaSalvar = false; } catch (e) { falhaSalvar = true; }
 }
-function commit() { S.modificadoEm = agoraISO(); salvar(); render(); agendarEnvio(); }
+function commit() { S.modificadoEm = agoraISO(); salvar(); render(); agendarEnvio(); gravarAgendaAvisos(); }
 
 /* ---------- cálculos (replicam as fórmulas da planilha) ---------- */
 const ativo = (it, m) =>
@@ -1055,6 +1064,34 @@ function blocosSimulador() {
 
 V.simulador = () => simuladorBase() + blocosSimulador();
 
+// Gasto do dia a dia: a Projeção só conta o que está lançado e o orçamento. Compara a média real dos últimos
+// 3 meses (despesas lançadas, sem o orçamento restante) com a despesa prevista para os próximos 3 meses.
+// É só um aviso: não muda nenhum cálculo.
+function gastoRealVsPrevisto(m0 = mkOf(hoje())) {
+  const c2 = v => Math.round(v * 100) / 100;
+  const reais = [1, 2, 3].map(i => mesBase(addM(m0, -i))).map(b => b.I - b.ov).filter(v => v > 0.005);
+  if (!reais.length) return null;
+  const real = reais.reduce((a, v) => a + v, 0) / reais.length;
+  const previsto = [0, 1, 2].map(i => mesBase(addM(m0, i)).I).reduce((a, v) => a + v, 0) / 3;
+  return { meses: reais.length, real: c2(real), previsto: c2(previsto), falta: c2(real - previsto) };
+}
+function cardGastoReal() {
+  const g = gastoRealVsPrevisto();
+  if (!g) return '';
+  const otimista = g.falta > Math.max(1, g.real * 0.05);
+  return `<section class="card" id="projGastoReal"><h2>Gasto do dia a dia</h2>
+      <div class="grid">
+        ${card(`Média real (${g.meses} ${g.meses === 1 ? 'mês' : 'meses'})`, brl(g.real), 'Despesas lançadas por mês, sem o orçamento restante', 'neg')}
+        ${card('Previsto (próximos 3 meses)', brl(g.previsto), 'Despesas por mês na Projeção', 'neg')}
+        ${otimista ? card('Projeção pode estar otimista', `${brl(g.falta)} por mês`, 'A média real é maior que o previsto', 'neg')
+          : card('Projeção cobre a média', '✓', 'O previsto é igual ou maior que a média real', 'pos')}
+      </div>
+      <p class="muted" style="margin-top:10px">${otimista
+        ? `Nos últimos meses você gastou em média ${brl(g.real)} por mês, mas a Projeção prevê ${brl(g.previsto)} para os próximos. A diferença costuma ser o gasto do dia a dia que ainda não foi lançado. Para a Projeção ficar realista, ajuste o orçamento variável na aba Orçamento.`
+        : 'A despesa prevista para os próximos meses cobre a média real recente.'} Este quadro é só um aviso: não muda os cálculos.</p>
+    </section>`;
+}
+
 V.projecao = () => {
   const rows = projecao(36).slice(0, horizProj);
   const grupos = agruparPeriodos(rows, periodoProj);
@@ -1089,6 +1126,7 @@ V.projecao = () => {
       ${legenda}
       ${graficoProj(grupos, tipoGrafico)}
     </section>
+    ${cardGastoReal()}
     <section class="card"><h2>Comparativo por período</h2><div class="scroll"><table>
       <thead><tr><th>Período</th><th class="num">Receitas</th><th class="num">Despesas</th><th class="num">Saldo</th>
         <th class="num">Saldo acumulado</th><th class="num">Gasto lançado</th><th class="num">Previsto − lançado</th></tr></thead>
@@ -1468,7 +1506,7 @@ V.lancamentos = () => {
     <section class="card"><h2>Novo lançamento</h2>
       <form class="fields" id="formLanc" onsubmit="addLanc(event)">
         <label>Data<input type="date" name="data" value="${hoje()}" required onchange="sugerirMesFatura(this.form, 'data', 'primeira')"></label>
-        <label>Descrição<input type="text" name="descricao" required></label>
+        <label>Descrição<input type="text" name="descricao" required onchange="aplicarRegra(this.form)"></label>
         <label>Categoria<select name="categoria">${opts(S.config.categorias, fx.categoria)}</select></label>
         <label>Forma<select name="forma" onchange="togLancCampos(this.form)">${opts(FORMAS, fx.forma)}</select></label>
         <label id="lbl-cartao" ${mostraCartao ? '' : 'hidden'}>Cartão<select name="cartao"><option value=""></option>${opts(S.config.cartoes, fx.cartao)}</select></label>
@@ -1834,7 +1872,7 @@ V.parcelas = () => {
         <label>Data da compra<input type="date" name="dataCompra" value="${hoje()}" required onchange="sugerirMesParc(this.form)"></label>
         <label>Cartão<select name="cartao">${opts(S.config.cartoes, parcFixo ? parcFixo.cartao : undefined)}</select></label>
         <label>Fatura<select name="fatura" onchange="sugerirMesParc(this.form)">${optsFatura(parcFixo && parcFixo.fatura === 'prox')}</select></label>
-        <label>Descrição<input type="text" name="descricao" required></label>
+        <label>Descrição<input type="text" name="descricao" required onchange="aplicarRegra(this.form)"></label>
         <label>Categoria<select name="categoria">${opts(S.config.categorias, parcFixo ? parcFixo.categoria : undefined)}</select></label>
         <label>Valor total (R$)<input type="number" step="0.01" min="0.01" name="valorTotal" required></label>
         <label>Nº de parcelas<input type="number" step="1" min="1" name="parcelas" value="1" required></label>
@@ -2026,8 +2064,10 @@ function clMarcar(i, marcado) {
   if (!it) return;
   if (marcado) clEntrada(it.key, true).pago = true;
   else if (S.checklist && S.checklist[clMesVisto()]) {
-    clRemoverMov(clEntrada(it.key));
-    delete S.checklist[clMesVisto()].itens[it.key];
+    const e = clEntrada(it.key);
+    clRemoverMov(e);
+    if (e.banco != null) { delete e.pago; delete e.valor; } // mantém o total importado da fatura
+    else delete S.checklist[clMesVisto()].itens[it.key];
   }
   commit();
 }
@@ -2040,6 +2080,15 @@ function clValor(i, valor) {
     const mov = clMov(e);
     if (mov) mov.valor = v; // a saída na Conta acompanha o valor pago
   } else { delete e.valor; clRemoverMov(e); }
+  commit();
+}
+// Fatura importada: marca paga com o total do banco.
+function clPagaBanco(i) {
+  const it = clLinhas[i];
+  if (!it) return;
+  const e = clEntrada(it.key, true);
+  if (e.banco == null) return;
+  e.pago = true; e.valor = e.banco;
   commit();
 }
 // O pagamento só sai da aba Conta quando o usuário pede, para não duplicar uma saída já lançada lá.
@@ -2107,6 +2156,8 @@ V.checklist = () => {
     const e = ent(it), d = clDif(it, e), temDif = d !== null && Math.abs(d) >= 0.005;
     return `<tr class="cl-item">
       <td>${esc(it.nome)}<div style="font-size:13px;margin-top:2px">${situacao(it)}</div>
+        ${e.banco != null ? `<div class="muted cl-banco" style="margin-top:4px">Fatura importada do banco: ${brl(e.banco)} · ${Math.abs(e.banco - it.previsto) < 0.005 ? 'bate com o lançado' : `${brl(Math.abs(e.banco - it.previsto))} a ${e.banco > it.previsto ? 'mais' : 'menos'} que o lançado`}</div>
+          ${e.pago && e.valor != null ? '' : `<button class="small" style="margin-top:4px;white-space:normal" onclick="clPagaBanco(${i})">Paga com ${brl(e.banco)}</button> `}` : ''}
         ${temDif ? `<button class="small" style="margin-top:4px;white-space:normal" onclick="clCorrigir(${i})">Corrigir lançamento</button> ` : ''}
         ${e.pago && e.valor > 0 ? (clMov(e)
           ? `<div class="muted" style="margin-top:4px">✓ Saída lançada na Conta <button class="small ghost-tema" onclick="clDesfazerConta(${i})">Desfazer</button></div>`
@@ -2144,7 +2195,7 @@ V.checklist = () => {
       </div>
       ${c.fora === 'sim' ? `<form class="fields" style="margin-top:12px" onsubmit="addFora(event)">
         <label>Data<input type="date" name="data" value="${padraoData}" required></label>
-        <label>Descrição<input type="text" name="descricao" required></label>
+        <label>Descrição<input type="text" name="descricao" required onchange="aplicarRegra(this.form)"></label>
         <label>Categoria<select name="categoria">${opts(S.config.categorias)}</select></label>
         <label>Forma<select name="forma">${opts(FORMAS)}</select></label>
         <label>Cartão (se Cartão)<select name="cartao"><option value=""></option>${opts(S.config.cartoes)}</select></label>
@@ -2158,6 +2209,76 @@ V.checklist = () => {
       </tbody></table></div>` : ''}` : ''}
     </section>`;
 };
+
+/* ---------- avisos no celular ----------
+   O service worker (sw.js) não lê os dados do app: a cada alteração, o app grava a lista do que avisar nos
+   próximos dias (cache "cf-avisos"). Com o app instalado no Android, o sistema acorda o service worker
+   (periodicSync) uma ou duas vezes por dia, e ele mostra o que vale para o dia. */
+function agendaAvisos(d = hoje()) {
+  const lista = [], vistos = new Set();
+  [...vencimentos(d), ...vencimentos(somaDias(d, 32))].forEach(v => {
+    const id = `venc:${v.cartao}:${v.data}`;
+    if (vistos.has(id) || v.pago || !(v.valor > 0.005)) return;
+    vistos.add(id);
+    lista.push({ id, de: somaDias(v.data, -3), ate: v.data, titulo: `Fatura ${v.cartao}`, texto: `Vence em ${fmtData(v.data)}: ${brl(v.valor)}.` });
+  });
+  [addM(mkOf(d), -1), mkOf(d)].forEach(m => {
+    const r = resumoChecklist(m), dia = dataChecklist(m);
+    if (r.concluido || !r.itens.length) return;
+    lista.push({ id: 'cl:' + m, de: dia, ate: somaDias(dia, 5), titulo: `Check list de ${mNome(m)}`, texto: `Confira o que foi pago: ${r.comValor} de ${r.itens.length} itens conferidos.` });
+  });
+  return lista.filter(a => a.ate >= d);
+}
+const avisosLigados = () => lsGet('cf-avisos-on', false) === true;
+const URL_AVISOS = () => new URL('./avisos.json', location.origin + location.pathname).href;
+async function gravarAgendaAvisos() {
+  if (!avisosLigados() || !('caches' in window)) return;
+  try {
+    const c = await caches.open('cf-avisos');
+    await c.put(URL_AVISOS(), new Response(JSON.stringify(agendaAvisos()), { headers: { 'Content-Type': 'application/json' } }));
+  } catch (e) { /* sem cache, sem aviso */ }
+}
+let avisoCelEstado = '';
+async function ativarAvisos() {
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !location.protocol.startsWith('http')) {
+    avisoCelEstado = 'Este navegador não mostra avisos.';
+    return render();
+  }
+  const p = await Notification.requestPermission();
+  if (p !== 'granted') {
+    avisoCelEstado = 'Os avisos foram bloqueados. Libere as notificações deste site nas configurações do navegador e tente de novo.';
+    return render();
+  }
+  lsSet('cf-avisos-on', true);
+  await gravarAgendaAvisos();
+  const reg = await navigator.serviceWorker.ready;
+  let fechado = false;
+  if ('periodicSync' in reg) {
+    try { await reg.periodicSync.register('cf-avisos', { minInterval: 12 * 3600 * 1000 }); fechado = true; } catch (e) { /* app não instalado */ }
+  }
+  avisoCelEstado = fechado ? 'Avisos ativados, também com o app fechado.'
+    : 'Avisos ativados. Para receber com o app fechado, instale o app na tela inicial (Android) e ative de novo; no iPhone e no computador, os avisos aparecem ao abrir o app.';
+  try { await reg.showNotification('Avisos ativados', { body: 'Você será avisado de faturas a vencer e do check list.', icon: 'icon-192.png', tag: 'cf-teste' }); } catch (e) {}
+  render();
+}
+async function desativarAvisos() {
+  lsSet('cf-avisos-on', false);
+  avisoCelEstado = 'Avisos desativados.';
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    if (reg.periodicSync) await reg.periodicSync.unregister('cf-avisos');
+    await caches.delete('cf-avisos');
+  } catch (e) {}
+  render();
+}
+function blocoAvisosCelular() {
+  const on = avisosLigados() && 'Notification' in window && Notification.permission === 'granted';
+  return `<section class="card" id="avisosCelular"><h2>Avisos no celular</h2>
+      <p class="muted">Avisa da fatura que vence em até 3 dias (se o Check list não marcar paga) e do Check list a partir do dia 5. Com o app instalado no Android, avisa mesmo com o app fechado; o Android escolhe a hora (cerca de uma ou duas vezes por dia). No iPhone e no computador, os avisos aparecem só ao abrir o app.</p>
+      <div class="row" style="margin-top:8px">${on ? '<button class="ghost-tema" id="avisosDesligar" onclick="desativarAvisos()">Desativar avisos</button>' : '<button id="avisosLigar" onclick="ativarAvisos()">Ativar avisos</button>'}</div>
+      ${avisoCelEstado ? `<p id="avisoCelEstado" style="margin-top:8px">${esc(avisoCelEstado)}</p>` : ''}
+    </section>`;
+}
 
 /* ---------- calendário: vencimentos e parcelas ----------
    A fatura de um mês vence no mês seguinte, no dia cadastrado para o cartão (S.config.vencimentos):
@@ -2422,6 +2543,42 @@ V.exportar = () => {
     </section>`;
 };
 
+/* ---------- regras de categoria ----------
+   "Se a descrição contém X, a categoria é Y". Valem no lançamento (ao sair da descrição) e na importação de fatura,
+   antes da sugestão pelo histórico. S.regrasCategoria = [{ id, texto, categoria }]. */
+const regraPara = desc => {
+  const d = semAcento(desc || '');
+  return (S.regrasCategoria || []).find(r => r.texto && d.includes(semAcento(r.texto)) && S.config.categorias.includes(r.categoria));
+};
+function aplicarRegra(form) {
+  if (!form || !form.categoria || !form.descricao) return;
+  const r = regraPara(form.descricao.value);
+  if (r) form.categoria.value = r.categoria;
+}
+function addRegra(e) {
+  e.preventDefault();
+  const f = e.target.elements, texto = f.texto.value.trim();
+  if (!texto) return alert('Informe o texto que a descrição deve conter.');
+  if ((S.regrasCategoria || []).some(r => semAcento(r.texto) === semAcento(texto))) return alert(`Já existe uma regra para "${texto}".`);
+  S.regrasCategoria = [...(S.regrasCategoria || []), { id: uid(), texto, categoria: f.categoria.value }];
+  commit();
+}
+function delRegra(id) { S.regrasCategoria = (S.regrasCategoria || []).filter(r => r.id !== id); commit(); }
+function blocoRegras() {
+  const regras = S.regrasCategoria || [];
+  return `<section class="card" id="regrasCategoria"><h2>Regras de categoria</h2>
+      <form class="fields" onsubmit="addRegra(event)">
+        <label>Se a descrição contém<input type="text" name="texto" placeholder="Ex.: UBER" required></label>
+        <label>A categoria é<select name="categoria">${opts(S.config.categorias)}</select></label>
+        <button>Adicionar regra</button>
+      </form>
+      ${regras.length ? `<div class="scroll" style="margin-top:10px"><table><thead><tr><th>A descrição contém</th><th>Categoria</th><th></th></tr></thead><tbody>
+        ${regras.map(r => `<tr><td>${esc(r.texto)}</td><td>${esc(r.categoria)}</td><td class="num"><button class="small danger" onclick="delRegra('${r.id}')">Excluir</button></td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+      <p class="muted" style="margin-top:10px">A regra escolhe a categoria sozinha ao lançar (quando você sai do campo Descrição) e ao importar uma fatura. Não importa maiúscula nem acento. A primeira regra que servir é a usada.</p>
+    </section>`;
+}
+
 /* ---------- importar fatura do cartão ----------
    Lê a fatura (PDF, CSV, OFX, Excel ou texto colado) no próprio aparelho: o arquivo não é enviado para lugar nenhum.
    Cada item vira uma linha para revisar, e só entra no app o que estiver marcado ao clicar em "Lançar".
@@ -2682,6 +2839,24 @@ async function impLerArquivo(...arqs) {
       : 'Não consegui ler esse arquivo. Tente o CSV ou o OFX do banco, ou cole o texto da fatura.');
   }
 }
+// Fatura recebida pelo "Compartilhar" do Android: o service worker guarda os arquivos e abre o app com ?compartilhado.
+async function abrirCompartilhado() {
+  history.replaceState(null, '', location.pathname);
+  try {
+    const c = await caches.open('cf-compartilhado'), arqs = [];
+    for (const k of await c.keys()) {
+      const r = await c.match(k), b = await r.blob();
+      arqs.push(new File([b], decodeURIComponent(r.headers.get('X-Nome') || 'fatura'), { type: b.type }));
+      await c.delete(k);
+    }
+    if (!arqs.length) return;
+    impFat = null;
+    ir('importar');
+    await impLerArquivo(arqs);
+  } catch (e) {
+    alert('Não consegui abrir o arquivo compartilhado. Use o campo de arquivo na aba Importar fatura.');
+  }
+}
 function impMontarTexto(t, origem) {
   if (/<STMTTRN>/i.test(t)) return impMontar(itensDoOFX(t), origem, '');
   const tab = itensDaTabela(lerCSV(t));
@@ -2707,6 +2882,8 @@ const PALAVRAS_CATEGORIA = [
 ];
 const chaveDesc = d => semAcento(d || '').replace(/[^a-z ]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !/^parc/.test(w)).slice(0, 2).join(' ');
 function categoriaSugerida(desc) {
+  const regra = regraPara(desc);
+  if (regra) return regra.categoria;
   const cats = S.config.categorias, k = chaveDesc(desc);
   const h = k && [...S.lancamentos, ...S.parcelados].filter(x => x.categoria && cats.includes(x.categoria) && chaveDesc(x.descricao) === k).pop();
   if (h) return h.categoria;
@@ -2776,7 +2953,19 @@ function impItem(id, campo, v) {
   const it = impFat && impFat.itens.find(x => x.id === id);
   if (!it) return;
   it[campo] = campo === 'marcado' ? !!v : v;
+  if (campo === 'categoria') it.catTrocada = true;
   render();
+}
+// "Sempre assim": cria a regra com as primeiras palavras da descrição e aplica nos outros itens iguais.
+function impRegra(id) {
+  const it = impFat && impFat.itens.find(x => x.id === id);
+  const texto = it && chaveDesc(it.descricao);
+  if (!texto) return alert('Essa descrição não tem palavras para criar uma regra. Crie em Configurações.');
+  if (!regraPara(it.descricao) || regraPara(it.descricao).categoria !== it.categoria)
+    S.regrasCategoria = [...(S.regrasCategoria || []).filter(r => semAcento(r.texto) !== texto), { id: uid(), texto, categoria: it.categoria }];
+  impFat.itens.forEach(x => { if (x.tipo === 'compra' && regraPara(x.descricao)) x.categoria = regraPara(x.descricao).categoria; });
+  it.catTrocada = false;
+  commit();
 }
 function impMarcarTodos(v) { impFat.itens.forEach(i => { if (i.tipo !== 'pagamento') i.marcado = v; }); render(); }
 function impCancelar() { impFat = null; impMsg = ''; render(); }
@@ -2806,7 +2995,14 @@ function lancarFatura() {
       n.compra++;
     }
   });
-  impMsg = `Lançado na fatura ${mFatura(mes)} do ${cartao}: ${n.compra} compra(s), ${n.parcela} parcelamento(s) e ${n.credito} crédito(s).`;
+  // Check list do mês: guarda o total da fatura do banco, para conferir o pagamento com um toque.
+  const lido = Math.round(impFat.itens.filter(i => i.tipo !== 'pagamento').reduce((a, i) => a + (i.tipo === 'credito' ? -i.valor : i.valor), 0) * 100) / 100;
+  const banco = impFat.total != null ? impFat.total : lido;
+  if (!S.checklist) S.checklist = {};
+  const cl = S.checklist[mes] = S.checklist[mes] || { itens: {} };
+  cl.itens = cl.itens || {};
+  cl.itens['fat:' + cartao] = { ...(cl.itens['fat:' + cartao] || {}), banco };
+  impMsg = `Lançado na fatura ${mFatura(mes)} do ${cartao}: ${n.compra} compra(s), ${n.parcela} parcelamento(s) e ${n.credito} crédito(s). O total do banco (${brl(banco)}) foi para o Check list de ${mNome(mes)}.`;
   faturaMes = mes;
   impFat = null;
   commit();
@@ -2822,7 +3018,7 @@ V.importar = () => {
         <textarea id="impTexto" rows="6" style="width:100%;margin-top:8px" placeholder="Copie as linhas das compras no app ou site do banco e cole aqui."></textarea>
         <button id="impLerTexto" style="margin-top:8px" onclick="impLerTexto()">Ler texto colado</button>
       </details>
-      <p class="muted" style="margin-top:10px">A leitura é feita neste aparelho: o arquivo não é enviado para lugar nenhum. Funciona com o PDF da fatura (também escaneado), com prints ou fotos da fatura no app do banco (pode escolher vários de uma vez) e com os arquivos CSV, OFX e Excel (.xlsx ou .xls) que os bancos exportam. Os leitores de PDF, imagem e .xls são baixados da internet na primeira vez. Se o PDF tiver senha, o app pede a senha e não a guarda. Nada é lançado antes da sua revisão.</p>
+      <p class="muted" style="margin-top:10px">A leitura é feita neste aparelho: o arquivo não é enviado para lugar nenhum. Funciona com o PDF da fatura (também escaneado), com prints ou fotos da fatura no app do banco (pode escolher vários de uma vez) e com os arquivos CSV, OFX e Excel (.xlsx ou .xls) que os bancos exportam. Os leitores de PDF, imagem e .xls são baixados da internet na primeira vez. Se o PDF tiver senha, o app pede a senha e não a guarda. Nada é lançado antes da sua revisão. No Android, com o app instalado, dá para mandar a fatura direto do app do banco: Compartilhar → Finanças.</p>
       <p id="impStatus" class="muted" style="margin-top:6px;font-weight:600"></p>
       ${impMsg ? `<p id="impMsg" style="margin-top:10px"><strong>${esc(impMsg)}</strong>${impMsg.startsWith('Lançado') ? ` <button class="small" onclick="ir('faturas')">Ver a fatura</button>` : ''}</p>` : ''}
     </section>`;
@@ -2836,7 +3032,7 @@ V.importar = () => {
       <td>${i.tipo === 'pagamento' ? '' : `<input type="checkbox" id="impM_${i.id}" ${i.marcado ? 'checked' : ''} onchange="impItem('${i.id}', 'marcado', this.checked)">`}</td>
       <td>${fmtData(resolverDataFat(i.dt, f.mes))}</td>
       <td><input type="text" value="${esc(i.descricao)}" onchange="impItem('${i.id}', 'descricao', this.value)" style="min-width:160px"></td>
-      <td>${i.tipo === 'compra' ? `<select onchange="impItem('${i.id}', 'categoria', this.value)">${opts(S.config.categorias, i.categoria)}</select>` : ''}</td>
+      <td>${i.tipo === 'compra' ? `<select onchange="impItem('${i.id}', 'categoria', this.value)">${opts(S.config.categorias, i.categoria)}</select>${i.catTrocada ? ` <button class="small" title="Criar regra para as próximas" onclick="impRegra('${i.id}')">Sempre assim</button>` : ''}` : ''}</td>
       <td class="num ${i.tipo === 'compra' ? 'neg' : 'pos'}">${i.tipo === 'compra' ? '' : '−'}${brl(i.valor)}</td>
       <td>${SITUACAO_FAT[i.situacao]}${i.parcela ? ` <span class="muted">(${i.parcela.k} de ${i.parcela.n}${i.situacao === 'parcela' && i.parcela.n > i.parcela.k ? `; as ${i.parcela.n - i.parcela.k} seguintes entram nas próximas faturas` : ''})</span>` : ''}</td>
     </tr>`).join('');
@@ -3217,6 +3413,8 @@ V.config = () => {
   const cats = c.categorias.map((x, i) => `<span class="chip">${esc(x)} <button class="small danger" onclick="delLista('categorias',${i})">×</button></span>`).join('');
   return `
     ${bloco}
+    ${blocoAvisosCelular()}
+    ${blocoRegras()}
     <section class="card"><h2>Configurações gerais</h2>
       <form class="fields" onsubmit="salvarCfg(event)">
         <label>Saldo inicial da conta (R$)<input type="number" step="0.01" name="saldoConta" value="${c.saldoConta}"></label>
@@ -3269,22 +3467,37 @@ function avisoBackup() {
   if (!temDados) return '';
   const avisos = [];
   if (lsGet('cf-base', null) === null) avisos.push('Este aparelho ainda não está sincronizado com o Drive: os dados ficam só neste navegador.');
-  const dias = S.ultimoBackup ? Math.floor((new Date(hoje()) - new Date(S.ultimoBackup)) / 864e5) : null;
+  const copia = lsGet('cf-sync', {}).ultimaCopia, ultimo = [S.ultimoBackup, copia].filter(Boolean).sort().pop();
+  const dias = ultimo ? Math.floor((new Date(hoje()) - new Date(ultimo)) / 864e5) : null;
   if (dias === null || dias > 30) avisos.push(dias === null ? 'Você ainda não exportou um backup.' : `Último backup há ${dias} dias.`);
   if (!avisos.length) return '';
   return `<div class="aviso"><span>${avisos.join(' ')}</span>
     <button class="small" onclick="exportar()">Exportar backup</button></div>`;
 }
 
+// Abas em quatro grupos; a linha de baixo mostra as abas do grupo da aba aberta.
+// Ao trocar de grupo, volta para a última aba usada nele.
+const GRUPOS_ABAS = [
+  ['Planejar', [['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'], ['ferias', 'Férias'], ['patrimonio', 'Patrimônio']]],
+  ['Lançar', [['lancamentos', 'Lançamentos'], ['importar', 'Importar fatura'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['eventuais', 'Eventuais'], ['conta', 'Conta']]],
+  ['Conferir', [['faturas', 'Faturas'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['exportar', 'Exportar gastos']]],
+  ['Configurar', [['config', 'Configurações']]]
+];
+const abaDoGrupo = {};
+function abasHTML() {
+  const g = GRUPOS_ABAS.find(([, abas]) => abas.some(([k]) => k === aba)) || GRUPOS_ABAS[0];
+  abaDoGrupo[g[0]] = aba;
+  const grupos = GRUPOS_ABAS.map(([nome, abas]) =>
+    `<button class="grupo ${nome === g[0] ? 'on' : ''}" onclick="ir('${abaDoGrupo[nome] || abas[0][0]}')">${nome}</button>`).join('');
+  const abas = g[1].length > 1
+    ? `<div class="sub-abas" data-grupo="${g[0]}">${g[1].map(([k, t]) => `<button class="tab ${k === aba ? 'on' : ''}" onclick="ir('${k}')">${t}</button>`).join('')}</div>` : '';
+  return `<div class="grupos">${grupos}</div>${abas}`;
+}
 function atualizarAvisos() { $('aviso').innerHTML = avisoSync() + avisoBackup() + avisoVencimento() + avisoChecklist(); }
 function render() {
-  const navX = $('abas').scrollLeft;
+  const sub = $('abas').querySelector('.sub-abas'), navX = sub ? sub.scrollLeft : 0, grupoAntes = sub && sub.dataset.grupo;
   atualizarAvisos();
-  $('abas').innerHTML = [
-    ['resumo', 'Resumo'], ['mesatual', 'Mês atual'], ['projecao', 'Projeção'], ['simulador', 'Simulador'], ['orcamento', 'Orçamento'],
-    ['lancamentos', 'Lançamentos'], ['conta', 'Conta'], ['recorrentes', 'Recorrentes'], ['parcelas', 'Parcelamentos'], ['faturas', 'Faturas'], ['importar', 'Importar fatura'], ['checklist', 'Check list'], ['calendario', 'Calendário'], ['ferias', 'Férias'], ['exportar', 'Exportar gastos'],
-    ['eventuais', 'Eventuais'], ['patrimonio', 'Patrimônio'], ['config', 'Configurações']
-  ].map(([k, t]) => `<button class="tab ${k === aba ? 'on' : ''}" onclick="ir('${k}')">${t}</button>`).join('');
+  $('abas').innerHTML = abasHTML();
   // Preserva as posições de rolagem (tabelas largas e barra de abas) entre redesenhos.
   const posY = window.scrollY;
   const mudouAba = aba !== abaRenderizada;
@@ -3294,7 +3507,11 @@ function render() {
   abaRenderizada = aba;
   restaurarRascunhos();
   restaurarFoco(foco);
-  $('abas').scrollLeft = navX;
+  const subNovo = $('abas').querySelector('.sub-abas');
+  if (subNovo) {
+    if (subNovo.dataset.grupo === grupoAntes) subNovo.scrollLeft = navX;
+    else { const on = subNovo.querySelector('.on'); if (on) subNovo.scrollLeft = on.offsetLeft - 20; }
+  }
   document.documentElement.style.setProperty('--abas-h', $('abas').offsetHeight + 'px');
   if (!$('calc').hidden) calcDesenhar(); // a aba pode ter mudado: atualiza o campo de destino
   if (!mudouAba) {
@@ -3361,6 +3578,8 @@ function calcDesenhar() {
   const r = calcAvaliar(calcExpr), alvo = calcCampo();
   const tecla = (t, cls = '', v = t) => `<button type="button" class="${cls}" onclick="calcTecla('${v}')">${t}</button>`;
   $('calc').innerHTML = `
+    <div class="calc-barra" id="calcBarra" onpointerdown="calcArrastar(event)" title="Arraste para mover"><span>⠿ Calculadora</span>
+      <button type="button" class="small" onclick="calcFechar()" aria-label="Fechar">✕</button></div>
     <input class="visor" id="calcVisor" inputmode="none" autocomplete="off" aria-label="Conta" value="${esc(calcExpr)}"
       oninput="calcExpr=this.value;calcPrevia()" onkeydown="calcTeclado(event)">
     <div class="res" id="calcRes">${r !== null && calcExpr ? '= ' + calcFmt(r) : ''}</div>
@@ -3372,8 +3591,7 @@ function calcDesenhar() {
       ${tecla('0')}${tecla(',')}${tecla('⌫', 'op')}${tecla('=', 'igual')}
     </div>
     <button type="button" id="calcUsar" onclick="calcUsar()" ${alvo && r !== null ? '' : 'disabled style="opacity:.5"'}>${
-      alvo ? `Usar em "${esc(alvo.rotulo)}"` : 'Nenhum campo de valor nesta aba'}</button>
-    <button type="button" class="small" style="background:var(--line);color:var(--ink)" onclick="calcFechar()">Fechar</button>`;
+      alvo ? `Usar em "${esc(alvo.rotulo)}"` : 'Nenhum campo de valor nesta aba'}</button>`;
 }
 // Atualiza só a prévia e o botão "Usar" (sem redesenhar o visor, para não perder o cursor ao digitar).
 function calcPrevia() {
@@ -3396,7 +3614,27 @@ function calcAbrir() {
   if (!$('calc').hidden) return calcFechar();
   $('calc').hidden = false;
   calcDesenhar();
+  calcPosicionar();
 }
+// Arrastar pela barra do topo, para tirar a calculadora de cima do que se quer ver. A posição vale até fechar o app.
+let calcPos = null;
+function calcArrastar(e) {
+  if (e.target.closest('button')) return;
+  const r = $('calc').getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+  const mover = ev => { calcPos = { x: ev.clientX - dx, y: ev.clientY - dy }; calcPosicionar(); };
+  const soltar = () => { removeEventListener('pointermove', mover); removeEventListener('pointerup', soltar); };
+  addEventListener('pointermove', mover);
+  addEventListener('pointerup', soltar);
+  e.preventDefault();
+}
+// Mantém a calculadora inteira dentro da janela (também ao mudar o tamanho ou o zoom).
+function calcPosicionar() {
+  const el = $('calc');
+  if (!calcPos || el.hidden) return;
+  const x = Math.max(0, Math.min(calcPos.x, innerWidth - el.offsetWidth)), y = Math.max(0, Math.min(calcPos.y, innerHeight - el.offsetHeight));
+  Object.assign(el.style, { left: x + 'px', top: y + 'px', right: 'auto', bottom: 'auto' });
+}
+addEventListener('resize', calcPosicionar);
 function calcFechar() { $('calc').hidden = true; }
 function calcUsar() {
   const r = calcAvaliar(calcExpr), alvo = calcCampo();
@@ -3543,7 +3781,7 @@ function delLista(lista, i) {
     ? S.parcelados.some(p => p.cartao === nome) || S.recorrentes.some(r => r.cartao === nome) ||
       S.lancamentos.some(l => l.cartao === nome) || (S.creditos || []).some(x => x.cartao === nome)
     : S.lancamentos.some(l => l.categoria === nome) || S.recorrentes.some(r => r.categoria === nome) ||
-      S.parcelados.some(p => p.categoria === nome);
+      S.parcelados.some(p => p.categoria === nome) || (S.regrasCategoria || []).some(r => r.categoria === nome);
   if (usado) return alert(`"${nome}" está em uso. Para trocar o nome sem perder nada, use "Renomear".`);
   if (lista === 'cartoes' && S.config.vencimentos) delete S.config.vencimentos[nome];
   S.config[lista].splice(i, 1);
@@ -3561,7 +3799,7 @@ function renomearLista(e, lista) {
   const campo = lista === 'cartoes' ? 'cartao' : 'categoria';
   const troca = arr => (arr || []).forEach(x => { if (x[campo] === antigo) x[campo] = novo; });
   S.config[lista] = S.config[lista].map(x => (x === antigo ? novo : x));
-  troca(S.parcelados); troca(S.recorrentes); troca(S.lancamentos);
+  troca(S.parcelados); troca(S.recorrentes); troca(S.lancamentos); troca(S.regrasCategoria);
   if (lista === 'cartoes') {
     troca(S.creditos);
     if (S.config.vencimentos && S.config.vencimentos[antigo]) { S.config.vencimentos[novo] = S.config.vencimentos[antigo]; delete S.config.vencimentos[antigo]; }
@@ -3835,7 +4073,7 @@ function importarPlanilhaLegada(todas) {
           cartoes: cartoes.length ? cartoes : S.config.cartoes,
           categorias: categorias.length ? categorias : S.config.categorias
         },
-        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, planoFerias: [], feriasPlanos: [], eventuais, lancamentos, ferias
+        orcamento, orcamentoMeses: {}, recorrentes, parcelados, estornos: [], creditos: [], movConta: [], checklist: {}, planoFerias: [], feriasPlanos: [], regrasCategoria: [], eventuais, lancamentos, ferias
       };
       commit();
       alert(`Planilha importada: ${recorrentes.length} recorrentes, ${parcelados.length} parcelamento(s), ${eventuais.length} evento(s) e ${lancamentos.length} lançamento(s).`);
@@ -4193,6 +4431,7 @@ function montarPlanilha() {
       JSON.stringify((x.extras || []).map(e => ({ nome: e.nome, valor: e.valor }))), JSON.stringify(fora)]);
   });
   abas.push({ nome: 'Ferias_Periodos', linhas: fps });
+  abas.push({ nome: 'Regras_Categoria', linhas: [['A descrição contém', 'Categoria'], ...(S.regrasCategoria || []).map(r => [r.texto, r.categoria])] });
 
   // Orçamento por mês (valores editáveis)
   const om = [
@@ -4406,6 +4645,9 @@ function interpretarNova(g) {
     naoSubstitui: [...recorrentes, ...eventuais].filter(i => lerJSON(r[8], []).includes(i.descricao) && i.valor !== undefined).map(i => i.id)
   }));
 
+  // Regras de categoria (aba opcional).
+  const regrasCategoria = (g.Regras_Categoria || []).slice(1).filter(r => r[0] && r[1]).map(r => ({ id: uid(), texto: String(r[0]), categoria: String(r[1]) }));
+
   // Vencimentos (aba opcional).
   const vencimentosCfg = {};
   (g.Vencimentos || []).slice(1).filter(r => r[0] && r[1]).forEach(r => { vencimentosCfg[String(r[0])] = Number(r[1]); });
@@ -4452,7 +4694,7 @@ function interpretarNova(g) {
       cartoes: cartoes.length ? cartoes : S.config.cartoes,
       categorias: categorias.length ? categorias : S.config.categorias
     },
-    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, planoFerias, feriasPlanos, eventuais, lancamentos, ferias, patrimonio
+    orcamento: {}, orcamentoMeses, recorrentes, parcelados, estornos, creditos, movConta, checklist, planoFerias, feriasPlanos, regrasCategoria, eventuais, lancamentos, ferias, patrimonio
   };
 }
 
@@ -4675,16 +4917,60 @@ async function acharArquivo() {
   const j = await (await drive(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=files(id)`)).json();
   return j.files[0] ? j.files[0].id : null;
 }
-async function gravarArquivo(texto, id) {
+async function gravarArquivo(texto, id, nome = SYNC_ARQ) {
   if (id) {
     const r = await drive(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media&fields=id`, { method: 'PATCH', headers: { 'Content-Type': 'application/octet-stream' }, body: texto });
     return r.json();
   }
   const b = 'cf' + Math.random().toString(36).slice(2);
-  const meta = JSON.stringify({ name: SYNC_ARQ, parents: ['appDataFolder'] });
+  const meta = JSON.stringify({ name: nome, parents: ['appDataFolder'] });
   const corpo = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${b}\r\nContent-Type: application/octet-stream\r\n\r\n${texto}\r\n--${b}--`;
   const r = await drive('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${b}` }, body: corpo });
   return r.json();
+}
+
+// Cópia de segurança: uma por dia na pasta privada do app, cifrada como o arquivo principal; ficam as 14 mais recentes.
+// Serve para voltar atrás quando algo é apagado por engano (a sincronização leva o apagamento a todos os aparelhos).
+const COPIA = 'controle-financeiro-copia-', COPIAS_MAX = 14;
+async function listarCopias() {
+  const q = encodeURIComponent(`name contains '${COPIA}' and trashed=false`);
+  const j = await (await drive(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=files(id,name)&pageSize=100`)).json();
+  return (j.files || []).filter(f => f.name.startsWith(COPIA)).sort((a, b) => b.name.localeCompare(a.name));
+}
+async function copiaDiaria(senha) {
+  const dia = hoje(), nome = `${COPIA}${dia}.enc`;
+  const copias = await listarCopias();
+  if (!copias.some(c => c.name === nome)) await gravarArquivo(await cifrar({ modificadoEm: S.modificadoEm, dados: semData(S) }, senha), null, nome);
+  for (const c of copias.filter(c => c.name !== nome).slice(COPIAS_MAX - 1)) await drive(`https://www.googleapis.com/drive/v3/files/${c.id}`, { method: 'DELETE' });
+  syncCfg.ultimaCopia = dia;
+  lsSet(SYNC_KEY, syncCfg);
+}
+const diaDaCopia = c => c.name.slice(COPIA.length, COPIA.length + 10);
+let copiasVistas = null;
+async function verCopias() {
+  try { copiasVistas = await listarCopias(); } catch (e) { return setSync('Não listou as cópias: ' + e.message); }
+  render();
+}
+async function restaurarCopia(id) {
+  const c = (copiasVistas || []).find(x => x.id === id);
+  if (!c) return;
+  const dia = fmtData(diaDaCopia(c));
+  if (!confirm(`Restaurar a cópia de ${dia}?\n\nOs dados voltam a ser os daquele dia, neste e nos outros aparelhos (na próxima sincronização). O que foi lançado depois se perde. A cópia de hoje continua no Drive, se precisar desfazer.`)) return;
+  try {
+    const txt = await (await drive(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`)).text();
+    let pacote, senha = ssGet('cf-senha');
+    try { pacote = await decifrar(txt, senha); } catch (e) {
+      senha = prompt('Essa cópia foi feita com outra senha de sincronização. Digite a senha daquela época:');
+      if (senha == null) return;
+      try { pacote = await decifrar(txt, senha); } catch (e2) { return setSync('Senha incorreta: a cópia não foi restaurada.'); }
+    }
+    S = Object.assign(blank(), pacote.dados);
+    S.config = Object.assign(blank().config, S.config);
+    commit();
+    setSync(`Cópia de ${dia} restaurada.`);
+  } catch (e) {
+    setSync('Não restaurou: ' + e.message);
+  }
 }
 
 function aplicarRemoto(r, msg) {
@@ -4785,6 +5071,9 @@ async function sincronizar() {
       lsSet(SYNC_KEY, syncCfg);
     }
     lsSet('cf-base', final);
+    if (syncCfg.ultimaCopia !== hoje()) {
+      try { await copiaDiaria(senha); } catch (e) { /* tenta de novo na próxima sincronização */ }
+    }
     setSync('Sincronizado às ' + hora());
   } catch (e) {
     // Sem internet ou falha de rede: tenta de novo em 30 segundos (e ao voltar a internet).
@@ -4835,7 +5124,7 @@ function blocoSync() {
       <p class="muted">Os dados vão para uma pasta privada do app no seu Drive, cifrados com a sua senha. Use o mesmo Client ID e a mesma senha em todos os aparelhos. Conectado, o app guarda a senha neste aparelho e renova sozinho o acesso do Google, que vence a cada hora; use "Desconectar" num aparelho que não é seu.</p>
       <form class="fields" onsubmit="salvarClientId(event)">
         <label>Client ID do Google Cloud <input id="sync-cid" value="${esc(syncCfg.clientId || '')}" placeholder="xxxxx.apps.googleusercontent.com"></label>
-        <p class="muted">Endereço de retorno que deve estar cadastrado no Google Cloud: <code>${esc(redirectUri())}</code></p>
+        <p class="muted" style="overflow-wrap:anywhere">Endereço de retorno que deve estar cadastrado no Google Cloud: <code>${esc(redirectUri())}</code></p>
         <div class="row"><button>Salvar Client ID</button></div>
       </form>
       <form class="fields" onsubmit="event.preventDefault();conectarDrive()">
@@ -4849,6 +5138,11 @@ function blocoSync() {
         <label>Nova senha de sincronização <input id="sync-nova" type="password" autocomplete="off"></label>
         <div class="row"><button>Trocar senha</button></div>
       </form>` : ''}
+      ${conectado ? `<div class="row" style="margin-top:10px"><button type="button" class="small" onclick="verCopias()">Ver cópias diárias no Drive</button></div>
+        ${copiasVistas ? `<div id="syncCopias" style="margin-top:8px">${copiasVistas.length
+          ? `<table><tbody>${copiasVistas.map(c => `<tr><td>Cópia de ${fmtData(diaDaCopia(c))}</td><td class="num"><button class="small" onclick="restaurarCopia('${c.id}')">Restaurar</button></td></tr>`).join('')}</tbody></table>`
+          : '<p class="muted">Nenhuma cópia ainda. A primeira é feita na próxima sincronização.</p>'}</div>` : ''}
+        <p class="muted" style="margin-top:6px">Todo dia, na primeira sincronização, o app guarda uma cópia cifrada no Drive (ficam as 14 mais recentes). Se algo for apagado por engano, restaure a cópia de um dia anterior.</p>` : ''}
       <p class="muted" id="syncstatus">${esc(syncEstado || (conectado ? 'Conectado.' : 'Não conectado.'))}</p>
     </section>`;
 }
@@ -4859,7 +5153,9 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) naviga
 lerRetornoOAuth();
 aba = lerAba();
 render();
-if (syncPronto()) { if (tokenValido()) sincronizar(); else renovarSePreciso(); }
+if (new URLSearchParams(location.search).has('compartilhado')) abrirCompartilhado();
+else if (syncPronto()) { if (tokenValido()) sincronizar(); else renovarSePreciso(); }
+gravarAgendaAvisos();
 // Ao voltar para a página (ex.: trocar de aplicativo no celular), sincroniza sozinho, renovando o acesso se venceu.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || !syncPronto()) return;
