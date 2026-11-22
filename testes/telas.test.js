@@ -470,7 +470,7 @@ const dadosSim = async extra => {
     orcamento: { 'Alimentação': 800 }, ...extra(m) } };
 };
 const simular = async (m, valor, parcelas, categoria = 'Lazer') => {
-  await pg.evaluate(([mm, v, p, c]) => { Object.assign(simEntrada, { valor: v, parcelas: p, mes: mm, categoria: c }); ir('simulador'); }, [m, valor, parcelas, categoria]);
+  await pg.evaluate(([mm, v, p, c]) => { Object.assign(simEntrada, { valor: v, parcelas: p, mes: mm, categoria: c }); (simAba = 'compra', ir('simulador')); }, [m, valor, parcelas, categoria]);
   return pg.evaluate(() => {
     const g = { ...simEntrada };
     const a = foto(g.mes, g.categoria, g.parcelas), d = comGasto(g, () => foto(g.mes, g.categoria, g.parcelas));
@@ -535,7 +535,7 @@ test('Simulador: indica o primeiro mês em que a compra deixa de ser reprovada e
   const { m, dados } = await dadosSim(mesVermelhoAgora);
   await definirDados(pg, dados);
   // 1.500 à vista: no mês atual, vermelho. Mês +1: acumulado 1.100 − 1.500 < 0. Mês +2: 2.900 − 1.500 = 1.400 e sobra 300 no mês.
-  await pg.evaluate(mm => { Object.assign(simEntrada, { valor: 1500, parcelas: 1, mes: mm, categoria: 'Lazer' }); ir('simulador'); }, m);
+  await pg.evaluate(mm => { Object.assign(simEntrada, { valor: 1500, parcelas: 1, mes: mm, categoria: 'Lazer' }); (simAba = 'compra', ir('simulador')); }, m);
   assert.match(await pg.innerText('#simMelhorMes'), new RegExp(await avaliar(pg, `mNome(addM('${m}', 2)).replace('/', '\\\\/')`)));
   // O mês escolhido no formulário vale: simular em outro mês muda a tabela, que começa nele e tem 12 linhas.
   const alvo = addMesStr(m, 3);

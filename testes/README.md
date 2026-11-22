@@ -29,6 +29,7 @@ O arquivo testado é escolhido nesta ordem: o caminho em `CF_APP`, se houver; de
 | `melhorias.test.js` | Abas em grupos (todas as abas num grupo, volta à última aba do grupo), quadro de gasto do dia a dia na Projeção, regras de categoria (lançamento, importação, "Sempre assim", renomear, planilha), fatura importada no Check list e a lista de avisos do celular. |
 | `guardar.test.js` | Quanto posso gastar (mês, dia, ritmo e médias de 3/6/12 meses, com valores calculados à mão) e a aba Guardar: destinos com meta, plano por valor e por %, guardar o planejado, previsão da meta, a Projeção sem mudar o saldo e a planilha mantendo tudo. |
 | `diaadia.test.js` | Orçamento 50-30-20 (grupos, ideal, sugestão, trocar grupo e método, planilha), lançamento rápido, desfazer, repetir, observação, alterar vários, conta variável com média, vencimento das contas fixas, valores a receber, quitar parcelas, busca, onde gasta, esconder valores e PIN. |
+| `cenarios.test.js` | Simulador por cenários: cada tipo de mudança (compra, gasto mensal, corte de orçamento, conta cancelada, receita a mais, a menos, em % e extra) com saldos calculados à mão, dados reais intactos, tela (criar, comparar, gráfico, mês a mês, analisar compra, duplicar, excluir com desfazer) e celular. |
 | `lib.js` | Base comum: abre o app, troca os dados (`definirDados`), avalia expressões na página e prepara o LibreOffice. |
 
 ## Detalhes
