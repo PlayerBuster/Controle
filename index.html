@@ -202,6 +202,7 @@ function blank() {
     destinos: [],
     planoGuardar: [],
     receber: [],
+    cenarios: [],
     eventuais: [],
     lancamentos: [],
     ferias: {},
@@ -1114,10 +1115,12 @@ function metaRodar(e) {
 const VCORES = { ok: '#1f9d62', cuidado: '#d68a1a', nao: '#d64545' };
 const VROT = { ok: 'Compra possível', cuidado: 'Compra possível com cuidado', nao: 'Não recomendado' };
 
-function blocosSimulador() {
+// parte: 'compra' (quanto posso gastar e parcelamentos da compra analisada) ou 'meta' (meta de compra).
+function blocosSimulador(parte) {
   const meses = Array.from({ length: 36 }, (_, i) => addM(S.config.primeiroMes, i));
   const g = { ...simEntrada };
   let out = '';
+  if (parte === 'meta') g.valor = 0;
   if (g.valor > 0) {
     const maior = maxPossivel(g.mes, g.categoria, g.parcelas);
     out += `<section class="card"><h2>Quanto posso gastar?</h2>
@@ -1132,6 +1135,7 @@ function blocosSimulador() {
       </tbody></table></div>
     </section>`;
   }
+  if (parte === 'compra') return out;
   const meta = metaEntrada.alvo ? metaCompra(metaEntrada.valor, metaEntrada.alvo) : null;
   out += `<section class="card"><h2>Meta de compra</h2>
     <p class="muted">Quanto guardar por mês para juntar um valor até uma data, comparado com a sobra do mês mais apertado do período.</p>
@@ -1149,7 +1153,279 @@ function blocosSimulador() {
   return out;
 }
 
-V.simulador = () => simuladorBase() + blocosSimulador();
+/* ---------- cenários: várias mudanças juntas, comparadas com a situação atual ----------
+   S.cenarios = [{ id, nome, itens: [...] }]. Nada mexe nos dados reais: comCenario() aplica as mudanças só durante
+   o cálculo e depois devolve tudo como estava. Tipos de item:
+   - compra { descricao, categoria, valor, mes, parcelas }: igual ao "Analisar uma compra" (despesa eventual por parcela).
+   - mensal { descricao, categoria, valor, de, ate }: conta fixa nova (ate vazio = sem fim).
+   - orcamento { categoria, valor, de, ate }: muda o orçamento da categoria em +valor por mês (negativo = cortar).
+   - cancelar { recId, de }: a conta recorrente deixa de existir a partir do mês.
+   - receita { modo: 'mais' | 'menos' | 'pctMais' | 'pctMenos' | 'extra', valor, de, ate, descricao }: receita a mais ou a menos,
+     em reais ou em % das receitas fixas do mês; 'extra' é uma vez só, no mês "de". */
+let simAba = 'cenarios', cenSel = null, cenTipo = 'compra', cenVisao = 'acum';
+const cenOcultos = new Set(); // cenários fora da comparação
+const CORES_CEN = ['#2f6fed', '#d68a1a', '#8a4fd6', '#0f9fb0', '#c2417a', '#6b7a2e'];
+const mesesCen = () => {
+  const ini = mIdx(mkOf(hoje())) < mIdx(S.config.primeiroMes) ? mkOf(hoje()) : S.config.primeiroMes;
+  return Array.from({ length: 48 }, (_, i) => addM(ini, i));
+};
+const fimDoMes = m => `${m}-${pad(diasNoMes(m))}`;
+function aplicarItemCenario(it, meses) {
+  const ate = it.ate || meses[meses.length - 1];
+  const faixa = (de, a) => meses.filter(m => mIdx(m) >= mIdx(de) && mIdx(m) <= mIdx(a));
+  if (it.tipo === 'compra') {
+    const { lancs, evs } = geraSimulacao({ valor: it.valor, categoria: it.categoria, mes: it.mes, parcelas: it.parcelas });
+    S.lancamentos.push(...lancs.map(l => ({ ...l, id: `cen${it.id}${l.id}`, descricao: it.descricao || 'Compra' })));
+    S.eventuais.push(...evs.map(e => ({ ...e, id: `cen${it.id}${e.id}`, descricao: it.descricao || 'Compra' })));
+  } else if (it.tipo === 'mensal') {
+    S.recorrentes.push({ id: 'cen' + it.id, descricao: it.descricao || 'Gasto mensal', grupo: 'Fixo', cartao: '', categoria: it.categoria,
+      valor: it.valor, inicio: it.de + '-01', fim: it.ate ? fimDoMes(it.ate) : '' });
+  } else if (it.tipo === 'orcamento') {
+    faixa(it.de, ate).forEach(m => {
+      const o = { ...orcEfetivo(m) };
+      o[it.categoria] = Math.max(0, (Number(o[it.categoria]) || 0) + it.valor);
+      S.orcamentoMeses[m] = o;
+    });
+  } else if (it.tipo === 'cancelar') {
+    const r = S.recorrentes.find(x => x.id === it.recId);
+    if (r && (!r.fim || r.fim >= it.de + '-01')) r.fim = diaAnterior(it.de + '-01');
+  } else if (it.tipo === 'receita') {
+    (it.modo === 'extra' ? [it.de] : faixa(it.de, ate)).forEach(m => {
+      const base = it.modo === 'pctMais' || it.modo === 'pctMenos' ? sumRec('Receita', m) * it.valor / 100 : it.valor;
+      const v = Math.round((it.modo === 'menos' || it.modo === 'pctMenos' ? -base : base) * 100) / 100;
+      if (v) S.eventuais.push({ id: `cen${it.id}${m}`, mes: m, descricao: it.descricao || 'Receita', tipo: 'Receita', valor: v });
+    });
+  }
+}
+// Calcula fn() com o cenário aplicado e devolve os dados reais ao fim, mesmo se der erro.
+function comCenario(c, fn) {
+  if (!c || !(c.itens || []).length) return fn();
+  const bak = { lancamentos: S.lancamentos, eventuais: S.eventuais, recorrentes: S.recorrentes, orcamentoMeses: S.orcamentoMeses };
+  try {
+    S.lancamentos = [...S.lancamentos];
+    S.eventuais = [...S.eventuais];
+    S.recorrentes = S.recorrentes.map(r => ({ ...r }));
+    S.orcamentoMeses = { ...S.orcamentoMeses };
+    const meses = mesesCen();
+    c.itens.forEach(it => aplicarItemCenario(it, meses));
+    return fn();
+  } finally { Object.assign(S, bak); }
+}
+// Números do cenário nos 24 meses a partir de hoje.
+function resultadoCenario(c) {
+  return comCenario(c, () => {
+    const m0 = mkOf(hoje());
+    const rows = projecao(36 + Math.max(0, mIdx(m0) - mIdx(S.config.primeiroMes))).filter(r => mIdx(r.m) >= mIdx(m0)).slice(0, 24);
+    if (!rows.length) return null;
+    const r12 = rows.slice(0, 12);
+    const menor = (arr, k) => arr.reduce((a, r) => (r[k] < a[k] ? r : a), arr[0]);
+    const pAcum = menor(r12, 'acum'), pSaldo = menor(r12, 'saldo');
+    const pg = podeGastar(m0), diasRest = pg.dias - Number(hoje().slice(8, 10)) + 1;
+    return { meses: rows.map(r => ({ m: r.m, saldo: r.saldo, acum: r.acum })),
+      acum12: r12[r12.length - 1].acum, acum24: rows[rows.length - 1].acum,
+      piorSaldo: pSaldo.saldo, piorMes: pSaldo.m, vermelho12: r12.filter(r => r.saldo < -0.005).length,
+      minAcum12: pAcum.acum, minAcum12Mes: pAcum.m, despMedia12: soma(r12, 'L') / r12.length,
+      saude: scoreSaude().score, porDia: Math.max(0, pg.restante) / diasRest };
+  });
+}
+// Veredito do cenário, conservador, comparado com a situação atual.
+function avaliarCenario(r, base) {
+  const motivos = [];
+  let nivel = 'ok';
+  const nao = t => { nivel = 'nao'; motivos.push(t); };
+  const cuidado = t => { if (nivel === 'ok') nivel = 'cuidado'; motivos.push(t); };
+  const novos = r.meses.slice(0, 12).filter((x, i) => x.saldo < -0.005 && !(base.meses[i] && base.meses[i].saldo < -0.005));
+  if (novos.length) nao(`${novos.length === 1 ? `${mNome(novos[0].m)} fica` : `${novos.length} meses ficam`} no vermelho nos próximos 12${novos.length > 1 ? ` (o primeiro é ${mNome(novos[0].m)})` : ''}.`);
+  if (r.minAcum12 < -0.005 && r.minAcum12 < base.minAcum12 - 0.005) nao(`O saldo acumulado fica negativo: pior momento ${brl(r.minAcum12)} em ${mNome(r.minAcum12Mes)}.`);
+  else if (r.minAcum12 < r.despMedia12 && r.minAcum12 < base.minAcum12 - 0.005) cuidado(`O menor saldo dos próximos 12 meses fica em ${brl(r.minAcum12)} (${mNome(r.minAcum12Mes)}), menos de um mês de despesas.`);
+  if (base.saude != null && r.saude != null && base.saude - r.saude >= 10) cuidado(`A Saúde financeira cai de ${base.saude} para ${r.saude} pontos.`);
+  if (nivel === 'ok') motivos.push(r.acum12 >= base.acum12 - 0.005 ? 'Mantém ou melhora o saldo, sem mês novo no vermelho.' : 'Nenhum mês novo no vermelho e o saldo continua com folga.');
+  return { nivel, motivos };
+}
+
+// Edição dos cenários.
+const cenAtual = () => (S.cenarios || []).find(c => c.id === cenSel) || null;
+function novoCenario(e) {
+  e.preventDefault();
+  const nome = e.target.elements.nome.value.trim();
+  if (!nome) return alert('Dê um nome ao cenário.');
+  const c = { id: uid(), nome, itens: [] };
+  S.cenarios = [...(S.cenarios || []), c];
+  cenSel = c.id;
+  commit();
+}
+function duplicarCenario() {
+  const c = cenAtual();
+  if (!c) return;
+  const n = { id: uid(), nome: `${c.nome} (cópia)`, itens: c.itens.map(it => ({ ...it, id: uid() })) };
+  S.cenarios = [...S.cenarios, n];
+  cenSel = n.id;
+  commit();
+}
+function renomearCenario(v) { const c = cenAtual(); if (c && v.trim()) { c.nome = v.trim(); commit(); } }
+function excluirCenario() {
+  const c = cenAtual();
+  if (!c || !confirm(`Excluir o cenário "${c.nome}"?`)) return;
+  pontoDesfazer();
+  S.cenarios = S.cenarios.filter(x => x.id !== c.id);
+  cenSel = null;
+  commit();
+  avisar(`Cenário "${c.nome}" excluído.`, true);
+}
+function addItemCenario(e) {
+  e.preventDefault();
+  const c = cenAtual(), f = e.target.elements;
+  if (!c) return;
+  const num = k => parseFloat(f[k].value);
+  const it = { id: uid(), tipo: cenTipo };
+  if (cenTipo === 'compra') Object.assign(it, { descricao: f.descricao.value.trim(), categoria: f.categoria.value, valor: num('valor'), mes: f.mes.value, parcelas: Math.min(36, Math.max(1, Math.round(num('parcelas') || 1))) });
+  else if (cenTipo === 'mensal') Object.assign(it, { descricao: f.descricao.value.trim(), categoria: f.categoria.value, valor: num('valor'), de: f.de.value, ate: f.ate.value || '' });
+  else if (cenTipo === 'orcamento') Object.assign(it, { categoria: f.categoria.value, valor: (f.sentido.value === 'cortar' ? -1 : 1) * num('valor'), de: f.de.value, ate: f.ate.value || '' });
+  else if (cenTipo === 'cancelar') Object.assign(it, { recId: f.recId.value, de: f.de.value });
+  else Object.assign(it, { modo: f.modo.value, valor: num('valor'), de: f.de.value, ate: f.modo.value === 'extra' ? '' : (f.ate.value || ''), descricao: f.descricao.value.trim() });
+  if (it.tipo !== 'cancelar' && !(Math.abs(it.valor) > 0)) return alert('Informe um valor maior que zero.');
+  if (it.tipo === 'cancelar' && !it.recId) return alert('Escolha a conta.');
+  if ((it.de || it.mes) == null || !(it.de || it.mes)) return alert('Informe o mês.');
+  if (it.ate && it.ate < it.de) return alert('O mês final não pode ser antes do inicial.');
+  c.itens = [...c.itens, it];
+  commit();
+}
+function delItemCenario(id) { const c = cenAtual(); if (c) { c.itens = c.itens.filter(x => x.id !== id); commit(); } }
+function analisarCompra(id) {
+  const it = (cenAtual() || { itens: [] }).itens.find(x => x.id === id);
+  if (!it) return;
+  Object.assign(simEntrada, { valor: it.valor, categoria: it.categoria, mes: it.mes, parcelas: it.parcelas });
+  simAba = 'compra';
+  render();
+  window.scrollTo(0, 0);
+}
+const nomeRec = id => { const r = S.recorrentes.find(x => x.id === id); return r ? r.descricao : 'conta excluída'; };
+function textoItemCenario(it) {
+  const periodo = !it.de ? '' : it.ate ? (it.ate === it.de ? mNome(it.de) : `${mNome(it.de)} a ${mNome(it.ate)}`) : `${mNome(it.de)} em diante`;
+  if (it.tipo === 'compra') return `Compra: ${it.descricao || it.categoria} · ${brl(it.valor)}${it.parcelas > 1 ? ` em ${it.parcelas}x de ${brl(it.valor / it.parcelas)}` : ''} · ${mNome(it.mes)} · ${it.categoria}`;
+  if (it.tipo === 'mensal') return `Gasto mensal novo: ${it.descricao || it.categoria} · ${brl(it.valor)} por mês · ${periodo}`;
+  if (it.tipo === 'orcamento') return `${it.valor < 0 ? 'Cortar' : 'Aumentar'} ${it.categoria} em ${brl(Math.abs(it.valor))} por mês · ${periodo}`;
+  if (it.tipo === 'cancelar') return `Cancelar ${nomeRec(it.recId)} a partir de ${mNome(it.de)}`;
+  const quanto = it.modo === 'pctMais' || it.modo === 'pctMenos' ? `${String(it.valor).replace('.', ',')}% da receita fixa` : brl(it.valor);
+  const rot = { mais: 'Receita a mais', menos: 'Receita a menos', pctMais: 'Receita a mais', pctMenos: 'Receita a menos', extra: 'Receita extra' }[it.modo];
+  return `${rot}${it.descricao ? `: ${it.descricao}` : ''} · ${quanto}${it.modo === 'extra' ? ` em ${mNome(it.de)}` : ` por mês · ${periodo}`}`;
+}
+// Veredito rápido de uma compra do cenário, sozinha, contra a situação atual (as mesmas regras de "Analisar uma compra").
+function vereditoCompra(it) {
+  const g = { valor: it.valor, categoria: it.categoria, mes: it.mes, parcelas: it.parcelas };
+  const a = foto(g.mes, g.categoria, g.parcelas);
+  return veredito(a, comGasto(g, () => foto(g.mes, g.categoria, g.parcelas)), g).nivel;
+}
+
+function formItemCenario() {
+  const ms = mesesCen(), m0 = mkOf(hoje()), cats = S.config.categorias;
+  const optM = (sel, vazio) => `${vazio ? '<option value="">sem fim</option>' : ''}${ms.map(m => `<option value="${m}" ${m === sel ? 'selected' : ''}>${mNome(m)}</option>`).join('')}`;
+  const de = `<label>A partir de<select name="de">${optM(m0)}</select></label>`, ate = `<label>Até<select name="ate">${optM('', true)}</select></label>`;
+  const contas = S.recorrentes.filter(r => r.grupo !== 'Receita' && (!r.fim || r.fim >= m0 + '-01'));
+  const campos = {
+    compra: `<label>Descrição<input type="text" name="descricao" placeholder="Ex.: Celular"></label>
+      <label>Categoria<select name="categoria">${opts(cats)}</select></label>
+      <label>Valor total (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>
+      <label>Mês<select name="mes">${optM(m0)}</select></label>
+      <label>Parcelas<input type="number" min="1" max="36" name="parcelas" value="1"></label>`,
+    mensal: `<label>Descrição<input type="text" name="descricao" placeholder="Ex.: Academia"></label>
+      <label>Categoria<select name="categoria">${opts(cats)}</select></label>
+      <label>Valor por mês (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>${de}${ate}`,
+    orcamento: `<label>Categoria<select name="categoria">${opts(cats)}</select></label>
+      <label>O que fazer<select name="sentido"><option value="cortar">Cortar (gastar menos)</option><option value="aumentar">Aumentar (gastar mais)</option></select></label>
+      <label>Quanto por mês (R$)<input type="number" step="0.01" min="0.01" name="valor" required></label>${de}${ate}`,
+    cancelar: contas.length ? `<label>Conta<select name="recId">${contas.map(r => `<option value="${r.id}">${esc(r.descricao)} · ${brl(r.valor)}</option>`).join('')}</select></label>${de}`
+      : '<p class="muted">Nenhuma conta recorrente ativa para cancelar.</p>',
+    receita: `<label>Tipo<select name="modo"><option value="mais">A mais por mês (R$)</option><option value="menos">A menos por mês (R$)</option>
+        <option value="pctMais">A mais por mês (% da receita fixa)</option><option value="pctMenos">A menos por mês (% da receita fixa)</option><option value="extra">Extra, uma vez só (R$)</option></select></label>
+      <label>Valor<input type="number" step="0.01" min="0.01" name="valor" required></label>
+      <label>Descrição<input type="text" name="descricao" placeholder="Ex.: aumento, freela"></label>${de}${ate}`
+  };
+  const TIPOS = [['compra', 'Compra'], ['mensal', 'Gasto mensal novo'], ['orcamento', 'Cortar ou aumentar gasto'], ['cancelar', 'Cancelar conta'], ['receita', 'Mudança de receita']];
+  return `<div class="row" style="margin:12px 0 8px;flex-wrap:wrap" id="cenTipos">${TIPOS.map(([k, t]) => `<button class="tab ${k === cenTipo ? 'on' : ''}" onclick="cenTipo='${k}';render()">${t}</button>`).join('')}</div>
+    <form class="fields" id="formCenItem" onsubmit="addItemCenario(event)">${campos[cenTipo]}${cenTipo === 'cancelar' && !contas.length ? '' : '<button>Adicionar ao cenário</button>'}</form>
+    ${cenTipo === 'receita' ? '<p class="muted" style="margin-top:6px">"Até" não vale para a receita extra. Para ficar sem salário por 2 meses, use "A menos por mês" com o valor do salário, de um mês até o seguinte.</p>' : ''}`;
+}
+function graficoCenarios(series, meses) {
+  const estreito = window.innerWidth < 600, W = estreito ? 360 : 760, H = estreito ? 220 : 280, P = { l: estreito ? 56 : 74, r: 10, t: 12, b: 30 };
+  const vals = [0, ...series.flatMap(s => s.valores)], minV = Math.min(...vals), maxV = Math.max(...vals), faixa = maxV - minV || 1;
+  const x = i => P.l + (W - P.l - P.r) * (meses.length > 1 ? i / (meses.length - 1) : 0.5);
+  const y = v => P.t + (H - P.t - P.b) * (1 - (v - minV) / faixa);
+  const passos = 4, eixo = Array.from({ length: passos + 1 }, (_, k) => minV + faixa * k / passos);
+  const curto = v => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(Math.abs(v) >= 10000 ? 0 : 1).replace('.', ',')} mil` : Math.round(v).toString());
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Saldo acumulado por cenário" style="max-width:${W}px;font-family:system-ui,sans-serif">
+    ${eixo.map(v => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)"/><text x="${P.l - 6}" y="${(y(v) + 4).toFixed(1)}" font-size="11" text-anchor="end" fill="var(--muted)">${valoresOcultos ? '•••' : curto(v)}</text>`).join('')}
+    ${minV < 0 ? `<line x1="${P.l}" x2="${W - P.r}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="var(--muted)" stroke-width="1.5"/>` : ''}
+    ${meses.map((m, i) => (i % (estreito ? 6 : 3) === 0 ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" font-size="11" text-anchor="middle" fill="var(--muted)">${mNome(m)}</text>` : '')).join('')}
+    ${series.map(s => `<polyline fill="none" stroke="${s.cor}" stroke-width="${s.base ? 2 : 2.5}" ${s.base ? 'stroke-dasharray="6 4"' : ''} points="${s.valores.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>`).join('')}
+  </svg>
+  <div class="legenda">${series.map(s => `<span><i class="sw" style="background:${s.cor}"></i>${esc(s.nome)}</span>`).join('')}</div>`;
+}
+
+function blocoSimCenarios() {
+  const todos = S.cenarios || [];
+  if (cenSel && !cenAtual()) cenSel = null;
+  if (!cenSel && todos.length) cenSel = todos[0].id;
+  const c = cenAtual(), base = resultadoCenario(null);
+  const criar = `<form class="fields" onsubmit="novoCenario(event)" style="margin-top:12px">
+      <label>Novo cenário<input type="text" name="nome" placeholder="Ex.: Carro novo" required></label><button>Criar cenário</button></form>`;
+  const intro = `<section class="card"><h2>Cenários</h2>
+      <p class="muted">Junte várias mudanças (compras, gastos novos, cortes, contas canceladas, receita a mais ou a menos) e compare com a situação atual. Nada muda nos seus dados: é só simulação. Os cenários ficam guardados para você voltar a eles.</p>
+      ${todos.length ? `<div class="row" style="margin-top:10px;flex-wrap:wrap" id="cenLista">${todos.map((x, i) => `<button class="tab ${x.id === cenSel ? 'on' : ''}" onclick="cenSel='${x.id}';render()"><i class="sw" style="background:${CORES_CEN[i % CORES_CEN.length]}"></i>${esc(x.nome)}</button>`).join('')}</div>` : ''}
+      ${criar}
+    </section>`;
+  if (!c) return intro;
+  const editor = `<section class="card" id="cenEditor"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <label style="flex:1;min-width:200px">Nome do cenário<input type="text" value="${esc(c.nome)}" onchange="renomearCenario(this.value)"></label>
+        <div class="row"><button class="small" onclick="duplicarCenario()">Duplicar</button><button class="small danger" onclick="excluirCenario()">Excluir cenário</button></div>
+      </div>
+      <h3 style="font-size:14px;margin:14px 0 6px">O que muda neste cenário</h3>
+      ${c.itens.length ? `<div class="scroll"><table id="cenItens"><tbody>${c.itens.map(it => {
+        const nv = it.tipo === 'compra' ? vereditoCompra(it) : null;
+        return `<tr><td>${esc(textoItemCenario(it))}${nv ? `<div style="font-size:12px;color:${VCORES[nv]}">${VROT[nv]} (sozinha)</div>` : ''}</td>
+          <td class="num">${it.tipo === 'compra' ? `<button class="small" onclick="analisarCompra('${it.id}')">Analisar</button> ` : ''}<button class="small danger" onclick="delItemCenario('${it.id}')">Tirar</button></td></tr>`;
+      }).join('')}</tbody></table></div>` : '<p class="muted">Nada ainda. Adicione a primeira mudança abaixo.</p>'}
+      ${formItemCenario()}
+    </section>`;
+  const comp = todos.filter(x => !cenOcultos.has(x.id) && x.itens.length);
+  if (!base) return intro + editor;
+  const res = comp.map(x => ({ c: x, cor: CORES_CEN[todos.indexOf(x) % CORES_CEN.length], r: resultadoCenario(x) })).filter(x => x.r);
+  res.forEach(x => { x.v = avaliarCenario(x.r, base); });
+  const col = [{ nome: 'Situação atual', r: base, cor: '#8a8f9c', base: true }, ...res.map(x => ({ nome: x.c.nome, r: x.r, cor: x.cor, v: x.v }))];
+  const cl = v => (v < -0.005 ? 'neg' : '');
+  const linha = (rot, f) => `<tr><th>${rot}</th>${col.map(k => `<td class="num">${f(k)}</td>`).join('')}</tr>`;
+  const tabela = `<div class="scroll"><table id="cenComparar">
+      <thead><tr><th></th>${col.map(k => `<th class="num"><i class="sw" style="background:${k.cor}"></i>${esc(k.nome)}</th>`).join('')}</tr></thead>
+      <tbody>
+        ${linha('Saldo acumulado em 12 meses', k => `<span class="${cl(k.r.acum12)}">${brl(k.r.acum12)}</span>`)}
+        ${linha('Saldo acumulado em 24 meses', k => `<span class="${cl(k.r.acum24)}">${brl(k.r.acum24)}</span>`)}
+        ${linha('Pior mês (12 meses)', k => `<span class="${cl(k.r.piorSaldo)}">${brl(k.r.piorSaldo)}</span> <span class="muted">${mNome(k.r.piorMes)}</span>`)}
+        ${linha('Meses no vermelho (12 meses)', k => k.r.vermelho12)}
+        ${linha('Menor saldo acumulado (12 meses)', k => `<span class="${cl(k.r.minAcum12)}">${brl(k.r.minAcum12)}</span>`)}
+        ${linha('Saúde financeira', k => (k.r.saude == null ? '—' : `${k.r.saude}/100`))}
+        ${linha('Pode gastar por dia neste mês', k => brl(k.r.porDia))}
+        ${linha('Veredito', k => (k.base ? '—' : `<strong style="color:${VCORES[k.v.nivel]}">${VROT[k.v.nivel].replace('Compra possível', 'Possível')}</strong>`))}
+      </tbody></table></div>
+      ${res.map(x => `<p style="margin-top:8px"><i class="sw" style="background:${x.cor}"></i><strong>${esc(x.c.nome)}:</strong> ${x.v.motivos.map(esc).join(' ')}</p>`).join('')}`;
+  const meses = base.meses.map(x => x.m);
+  const grafico = graficoCenarios(col.map(k => ({ nome: k.nome, cor: k.cor, base: k.base, valores: k.r.meses.map(x => x.acum) })), meses);
+  const campo = cenVisao === 'acum' ? 'acum' : 'saldo';
+  const mesAMes = `<div class="row" style="margin-bottom:8px">${[['acum', 'Saldo acumulado'], ['saldo', 'Saldo do mês']].map(([k, t]) => `<button class="tab ${k === cenVisao ? 'on' : ''}" onclick="cenVisao='${k}';render()">${t}</button>`).join('')}</div>
+    <div class="scroll"><table id="cenMeses"><thead><tr><th>Mês</th>${col.map(k => `<th class="num">${esc(k.nome)}</th>`).join('')}</tr></thead>
+      <tbody>${meses.map((m, i) => `<tr><td>${mNome(m)}</td>${col.map(k => { const v = k.r.meses[i][campo]; return `<td class="num ${cl(v)}">${brl(v)}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const escolha = todos.length > 1 ? `<div class="row" style="flex-wrap:wrap;margin-bottom:10px"><span class="muted">Comparar:</span>${todos.map(x => `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" ${cenOcultos.has(x.id) ? '' : 'checked'} onchange="if (this.checked) cenOcultos.delete('${x.id}'); else cenOcultos.add('${x.id}'); render()"> ${esc(x.nome)}</label>`).join('')}</div>` : '';
+  return intro + editor + `
+    <section class="card"><h2>Comparação com a situação atual</h2>${escolha}
+      ${res.length ? tabela : '<p class="muted">Adicione mudanças a um cenário para comparar.</p>'}
+    </section>
+    ${res.length ? `<section class="card"><h2>Saldo acumulado nos próximos 24 meses</h2>${grafico}
+      <p class="muted" style="margin-top:6px">A linha tracejada é a situação atual. Abaixo de zero, o dinheiro acaba.</p></section>
+    <section class="card"><h2>Mês a mês</h2>${mesAMes}</section>` : ''}`;
+}
+
+V.simulador = () => `<div class="row" id="simAbas" style="flex-wrap:wrap">${[['cenarios', 'Cenários'], ['compra', 'Analisar uma compra'], ['meta', 'Meta de compra']]
+  .map(([k, t]) => `<button class="tab ${k === simAba ? 'on' : ''}" onclick="simAba='${k}';render()">${t}</button>`).join('')}</div>`
+  + (simAba === 'compra' ? simuladorBase() + blocosSimulador('compra') : simAba === 'meta' ? blocosSimulador('meta') : blocoSimCenarios());
 
 // Gasto do dia a dia: a Projeção só conta o que está lançado e o orçamento. Compara a média real dos últimos
 // 3 meses (despesas lançadas, sem o orçamento restante) com a despesa prevista para os próximos 3 meses.
